@@ -28,6 +28,20 @@ fn driftsort<T, F: FnMut(&T, &T) -> bool>(v: &mut [T], mut is_less: F) {
 }
 
 #[inline(never)]
+#[cold]
+fn slow_path_sort<T, F: FnMut(&T, &T) -> bool>(v: &mut [T], is_less: &mut F) {
+    let alloc_size = SMALL_SORT_THRESH.max(v.len() / 2);
+    let mut scratch: Vec<T> = Vec::with_capacity(alloc_size);
+    let scratch_slice = unsafe {
+        std::slice::from_raw_parts_mut(
+            scratch.as_mut_ptr().cast::<MaybeUninit<T>>(),
+            scratch.capacity(),
+        )
+    };
+    drift::sort(v, scratch_slice, false, is_less);
+}
+
+#[inline(never)]
 fn physical_merge<T, F: FnMut(&T, &T) -> bool>(
     v: &mut [T],
     scratch: &mut [MaybeUninit<T>],
@@ -64,16 +78,3 @@ fn stable_quicksort<T, F: FnMut(&T, &T) -> bool>(
     })
 }
 
-#[inline(never)]
-#[cold]
-fn slow_path_sort<T, F: FnMut(&T, &T) -> bool>(v: &mut [T], is_less: &mut F) {
-    let alloc_size = SMALL_SORT_THRESH.max(v.len() / 2);
-    let mut scratch: Vec<T> = Vec::with_capacity(alloc_size);
-    let scratch_slice = unsafe {
-        std::slice::from_raw_parts_mut(
-            scratch.as_mut_ptr().cast::<MaybeUninit<T>>(),
-            scratch.capacity(),
-        )
-    };
-    drift::sort(v, scratch_slice, false, is_less);
-}
