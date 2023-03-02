@@ -2,7 +2,6 @@
 name = "driftsort"
 version = "0.1.0"
 edition = "2021"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+authors = ["Orson Peters <orsonpeters@gmail.com>", "Lukas Bergdoll <lukas.bergdoll@gmail.com>"]
 
 [dependencies]
