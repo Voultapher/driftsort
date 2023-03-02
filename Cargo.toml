@@ -2,6 +2,17 @@
 name = "driftsort"
 version = "0.1.0"
 edition = "2021"
+type = "lib"
 authors = ["Orson Peters <orsonpeters@gmail.com>", "Lukas Bergdoll <lukas.bergdoll@gmail.com>"]
 
+[lib]
+# They are just noisy and this is not meant as a documented library, but as a testbed.
+doctest = false
+# Arguably everything you want to test should be your oberservable interface.
+# Plus it's faster to run everything as integration test.
+# See https://matklad.github.io/2021/02/27/delete-cargo-integration-tests.html
+test = false
+
+
 [dependencies]
+sort_test_tools = { git = "https://github.com/Voultapher/sort-research-rs" }
