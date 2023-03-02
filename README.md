@@ -1,13 +1,15 @@
 # Driftsort
 
-Driftsort is a fast, generic robust stable sort. Designed to be the new Rust
-standard library `slice::sort`. Derived from glidesort. Fundamentally it's a
-hybrid quick- merge-sort. Using quicksort to sort parts of the input that are
-not ascending or descending. And using a powersort based merge-sort to combine
-these parts with parts of the input that is already sorted ascending or
-descending. Together with pdqsort style common value filtering. This
-implementation is designed to be robust and highly adaptive to real world
-patterns.
+Driftsort is a fast, generic robust stable sort, designed to be the new Rust
+standard library `slice::sort`. It is derived from glidesort, meaning that it's
+fundamentally a hybrid between quick- and mergesort. Mergesort, or more
+specifically, powersort, is used to take advantage of pre-existing ascending or
+descending runs. For unordered input (segments) quicksort is used for its fast
+average case and optimal performance on inputs with many duplicates, similar to
+pdqsort.
+
+This implementation is designed to be robust and highly adaptive to real world
+patterns, while putting reasonable limits on the code size.
 
 ## Goals
 
@@ -24,10 +26,6 @@ patterns.
 - Same performance as glidesort
 - N / x auxiliary memory support (? - might get for free)
 
-## How to use
-
-TODO
-
 ## Contributing
 
 Please respect the [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) when contributing.
@@ -42,7 +40,5 @@ who participated in this project.
 
 ## License
 
-This project is licensed under the Apache License, Version 2.0 -
-see the [LICENSE.md](LICENSE.md) file for details.
-
-
+This project is dual licensed under the MIT license and the Apache License,
+version 2.0 - see the [LICENSE.md](LICENSE.md) file for details.
