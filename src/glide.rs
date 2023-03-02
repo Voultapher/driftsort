@@ -128,21 +128,21 @@ impl MergeStack {
 }
 
 pub fn sort<T, F: FnMut(&T, &T) -> bool>(
-    el: &mut [T],
+    v: &mut [T],
     scratch: &mut [MaybeUninit<T>],
     eager_sort: bool,
     is_less: &mut F,
 ) {
-    let scale_factor = merge_tree_scale_factor(el.len());
+    let scale_factor = merge_tree_scale_factor(v.len());
     let mut merge_stack = MergeStack::new();
 
     let mut prev_run_start_idx = 0;
     let mut prev_run;
-    prev_run = LogicalRun::create(el, 0, eager_sort, is_less);
-    while prev_run_start_idx + prev_run.len() < el.len() {
+    prev_run = LogicalRun::create(v, 0, eager_sort, is_less);
+    while prev_run_start_idx + prev_run.len() < v.len() {
         let next_run_start_idx = prev_run_start_idx + prev_run.len();
         let next_run;
-        next_run = LogicalRun::create(el, next_run_start_idx, eager_sort, is_less);
+        next_run = LogicalRun::create(v, next_run_start_idx, eager_sort, is_less);
 
         let desired_depth = merge_tree_depth(
             prev_run_start_idx,
@@ -155,7 +155,7 @@ pub fn sort<T, F: FnMut(&T, &T) -> bool>(
         // with a deeper desired merge depth into it.
         let mut left_child = prev_run;
         while let Some(left_descendant) = merge_stack.pop_if_deeper_or_eq_to(desired_depth) {
-            left_child = left_descendant.logical_merge(el, scratch, left_child, is_less);
+            left_child = left_descendant.logical_merge(v, scratch, left_child, is_less);
         }
 
         unsafe {
@@ -173,7 +173,7 @@ pub fn sort<T, F: FnMut(&T, &T) -> bool>(
     // Collapse the stack down to a single logical run and physically sort it.
     let mut result = prev_run;
     while let Some(left_child) = merge_stack.pop_node() {
-        result = left_child.logical_merge(el, scratch, result, is_less);
+        result = left_child.logical_merge(v, scratch, result, is_less);
     }
-    result.physical_sort(el, scratch, is_less);
+    result.physical_sort(v, scratch, is_less);
 }
