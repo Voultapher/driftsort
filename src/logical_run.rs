@@ -23,7 +23,7 @@ impl LogicalRun {
     }
 
     pub fn create<T, F: FnMut(&T, &T) -> bool>(
-        el: &mut [T],
+        v: &mut [T],
         start: usize,
         eager_sort: bool,
         is_less: &mut F,
@@ -31,7 +31,7 @@ impl LogicalRun {
         // FIXME: actually detect runs.
         Self {
             start_and_sorted: start << 1,
-            length: el.len().saturating_sub(start).min(32),
+            length: v.len().saturating_sub(start).min(32),
         }
     }
 
@@ -60,17 +60,17 @@ impl LogicalRun {
 
     pub fn logical_merge<T, F: FnMut(&T, &T) -> bool>(
         mut self,
-        el: &mut [T],
+        v: &mut [T],
         scratch: &mut [MaybeUninit<T>],
         mut other: LogicalRun,
         is_less: &mut F,
     ) -> Self {
-        if self.should_physically_merge(&other, el.len(), scratch.len()) {
-            self.physical_sort(el, scratch, is_less);
-            other.physical_sort(el, scratch, is_less);
+        if self.should_physically_merge(&other, v.len(), scratch.len()) {
+            self.physical_sort(v, scratch, is_less);
+            other.physical_sort(v, scratch, is_less);
             crate::physical_merge(
-                &mut el[self.start_idx()..other.start_idx() + other.length],
-                // unsafe { el.get_unchecked_mut(self.start_idx()..other.start_idx() + other.length) },
+                &mut v[self.start_idx()..other.start_idx() + other.length],
+                // unsafe { v.get_unchecked_mut(self.start_idx()..other.start_idx() + other.length) },
                 scratch,
                 self.length,
                 is_less,
@@ -89,14 +89,14 @@ impl LogicalRun {
 
     pub fn physical_sort<T, F: FnMut(&T, &T) -> bool>(
         &mut self,
-        el: &mut [T],
+        v: &mut [T],
         scratch: &mut [MaybeUninit<T>],
         is_less: &mut F,
     ) {
         if self.start_and_sorted & 1 == 0 {
             stable_quicksort(
-                &mut el[self.start_idx()..self.start_idx() + self.length],
-                // unsafe { el.get_unchecked_mut(self.start_idx()..self.start_idx() + self.length) },
+                &mut v[self.start_idx()..self.start_idx() + self.length],
+                // unsafe { v.get_unchecked_mut(self.start_idx()..self.start_idx() + self.length) },
                 scratch,
                 is_less,
             );
