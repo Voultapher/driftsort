@@ -2,10 +2,30 @@
 
 const SMALL_SORT_THRESH: usize = 32;
 
+use std::cmp::Ordering;
 use std::mem::MaybeUninit;
 
 mod glide;
 mod logical_run;
+
+#[inline(always)]
+pub fn sort<T: Ord>(el: &mut [T]) {
+    driftsort(el, |a, b| a.lt(b))
+}
+
+#[inline(always)]
+pub fn sort_by<T, F: FnMut(&T, &T) -> Ordering>(el: &mut [T], mut compare: F) {
+    driftsort(el, |a, b| compare(a, b) == Ordering::Less);
+}
+
+#[inline(always)]
+pub fn driftsort<T, F: FnMut(&T, &T) -> bool>(el: &mut [T], mut is_less: F) {
+    if el.len() < 2 || std::mem::size_of::<T>() == 0 {
+        return;
+    }
+
+    slow_path_sort(el, &mut is_less);
+}
 
 #[inline(never)]
 pub fn physical_merge<T, F: FnMut(&T, &T) -> bool>(
@@ -44,18 +64,9 @@ pub fn stable_quicksort<T, F: FnMut(&T, &T) -> bool>(
     })
 }
 
-#[inline(always)]
-pub fn sort<T: Ord>(el: &mut [T]) {
-    if el.len() < 2 || std::mem::size_of::<T>() == 0 {
-        return;
-    }
-
-    slow_path_sort(el)
-}
-
 #[inline(never)]
 #[cold]
-pub fn slow_path_sort<T: Ord>(el: &mut [T]) {
+pub fn slow_path_sort<T, F: FnMut(&T, &T) -> bool>(el: &mut [T], is_less: &mut F) {
     let alloc_size = SMALL_SORT_THRESH.max(el.len() / 2);
     let mut scratch: Vec<T> = Vec::with_capacity(alloc_size);
     let scratch_slice = unsafe {
@@ -64,5 +75,5 @@ pub fn slow_path_sort<T: Ord>(el: &mut [T]) {
             scratch.capacity(),
         )
     };
-    glide::sort(el, scratch_slice, false, &mut T::lt);
+    glide::sort(el, scratch_slice, false, is_less);
 }
