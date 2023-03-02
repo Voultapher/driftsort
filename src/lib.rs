@@ -7,6 +7,7 @@ use std::mem::MaybeUninit;
 
 mod glide;
 mod glide_dyn_dispatch;
+mod glide_dyn_dispatch2;
 mod logical_run;
 
 #[inline(always)]
@@ -25,11 +26,21 @@ pub fn driftsort<T, F: FnMut(&T, &T) -> bool>(el: &mut [T], mut is_less: F) {
         return;
     }
 
-    slow_path_sort(el, &mut is_less);
+    slow_path_sort_dyn(el, &mut is_less);
 }
 
 pub trait SortOps {
     fn create_run(&mut self, start: usize, eager_sort: bool) -> glide_dyn_dispatch::LogicalRun;
+    fn physical_sort(&mut self, start: usize, end: usize);
+    fn physical_merge(&mut self, start: usize, mid: usize, end: usize);
+}
+
+pub trait SortOps2 {
+    fn create_run(
+        &mut self,
+        start: usize,
+        eager_sort: bool,
+    ) -> glide_dyn_dispatch2::LengthAndSorted;
     fn physical_sort(&mut self, start: usize, end: usize);
     fn physical_merge(&mut self, start: usize, mid: usize, end: usize);
 }
@@ -47,6 +58,47 @@ impl<'a, T, F: FnMut(&T, &T) -> bool> SortOps for SortParams<'a, T, F> {
         glide_dyn_dispatch::LogicalRun::new_unsorted(
             start,
             self.el.len().saturating_sub(start).min(32),
+        )
+    }
+
+    fn physical_sort(&mut self, start: usize, end: usize) {
+        // FIXME
+        self.el[start..end].sort_by(|a, b| {
+            if (self.is_less)(a, b) {
+                std::cmp::Ordering::Less
+            } else if (self.is_less)(b, a) {
+                std::cmp::Ordering::Greater
+            } else {
+                std::cmp::Ordering::Equal
+            }
+        });
+    }
+
+    fn physical_merge(&mut self, start: usize, mid: usize, end: usize) {
+        // FIXME
+        self.el[start..end].sort_by(|a, b| {
+            if (self.is_less)(a, b) {
+                std::cmp::Ordering::Less
+            } else if (self.is_less)(b, a) {
+                std::cmp::Ordering::Greater
+            } else {
+                std::cmp::Ordering::Equal
+            }
+        });
+    }
+}
+
+// Physical operations.
+impl<'a, T, F: FnMut(&T, &T) -> bool> SortOps2 for SortParams<'a, T, F> {
+    fn create_run(
+        &mut self,
+        start: usize,
+        eager_sort: bool,
+    ) -> glide_dyn_dispatch2::LengthAndSorted {
+        // FIXME: actually detect runs.
+        glide_dyn_dispatch2::LengthAndSorted::new(
+            self.el.len().saturating_sub(start).min(32),
+            false,
         )
     }
 
@@ -130,7 +182,7 @@ pub fn slow_path_sort<T, F: FnMut(&T, &T) -> bool>(el: &mut [T], is_less: &mut F
 
 #[inline(never)]
 #[cold]
-pub fn slow_path_sort_dyn<T: Ord>(el: &mut [T]) {
+pub fn slow_path_sort_dyn<T, F: FnMut(&T, &T) -> bool>(el: &mut [T], is_less: &mut F) {
     let alloc_size = SMALL_SORT_THRESH.max(el.len() / 2);
     let mut scratch: Vec<T> = Vec::with_capacity(alloc_size);
     let scratch_slice = unsafe {
@@ -144,7 +196,7 @@ pub fn slow_path_sort_dyn<T: Ord>(el: &mut [T]) {
     let mut params = SortParams {
         el,
         scratch: scratch_slice,
-        is_less: &mut T::lt,
+        is_less,
     };
-    glide_dyn_dispatch::sort(&mut params, false, el_len, scratch_len);
+    glide_dyn_dispatch2::sort(&mut params, false, el_len, scratch_len);
 }

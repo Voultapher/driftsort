@@ -137,8 +137,7 @@ pub fn sort<T, F: FnMut(&T, &T) -> bool>(
     let mut merge_stack = MergeStack::new();
 
     let mut prev_run_start_idx = 0;
-    let mut prev_run;
-    prev_run = LogicalRun::create(el, 0, eager_sort, is_less);
+    let mut prev_run = LogicalRun::create(el, 0, eager_sort, is_less);
     while prev_run_start_idx + prev_run.len() < el.len() {
         let next_run_start_idx = prev_run_start_idx + prev_run.len();
         let next_run;
