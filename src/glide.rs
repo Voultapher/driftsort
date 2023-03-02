@@ -1,5 +1,5 @@
-use core::mem::MaybeUninit;
 use crate::logical_run::LogicalRun;
+use core::mem::MaybeUninit;
 
 // Nearly-Optimal Mergesorts: Fast, Practical Sorting Methods That Optimally
 // Adapt to Existing Runs by J. Ian Munro and Sebastian Wild.
@@ -71,7 +71,7 @@ impl MergeStack {
     }
 
     /// Push a merge node on the stack given its left child and desired depth.
-    /// 
+    ///
     /// SAFETY: the stack may not be full (64 elements).
     #[inline(always)]
     unsafe fn push_node_unchecked(&mut self, left_child: LogicalRun, desired_depth: u8) {
@@ -92,7 +92,9 @@ impl MergeStack {
         // SAFETY: len > 0 guarantees this is initialized by a previous push.
         self.len -= 1;
         Some(unsafe {
-            self.left_children.get_unchecked(self.len).assume_init_read()
+            self.left_children
+                .get_unchecked(self.len)
+                .assume_init_read()
         })
     }
 
@@ -107,21 +109,33 @@ impl MergeStack {
 
         // SAFETY: len > 0 guarantees this is initialized by a previous push.
         unsafe {
-            let top_depth = self.desired_depths.get_unchecked(self.len - 1).assume_init();
+            let top_depth = self
+                .desired_depths
+                .get_unchecked(self.len - 1)
+                .assume_init();
             if top_depth < depth {
                 return None;
             }
 
             self.len -= 1;
-            Some(self.left_children.get_unchecked(self.len).assume_init_read())
+            Some(
+                self.left_children
+                    .get_unchecked(self.len)
+                    .assume_init_read(),
+            )
         }
     }
 }
 
-pub fn sort<T, F: FnMut(&T, &T) -> bool>(el: &mut [T], scratch: &mut [MaybeUninit<T>], eager_sort: bool, is_less: &mut F) {
+pub fn sort<T, F: FnMut(&T, &T) -> bool>(
+    el: &mut [T],
+    scratch: &mut [MaybeUninit<T>],
+    eager_sort: bool,
+    is_less: &mut F,
+) {
     let scale_factor = merge_tree_scale_factor(el.len());
     let mut merge_stack = MergeStack::new();
-    
+
     let mut prev_run_start_idx = 0;
     let mut prev_run;
     prev_run = LogicalRun::create(el, 0, eager_sort, is_less);
@@ -163,6 +177,3 @@ pub fn sort<T, F: FnMut(&T, &T) -> bool>(el: &mut [T], scratch: &mut [MaybeUnini
     }
     result.physical_sort(el, scratch, is_less);
 }
-
-
-
