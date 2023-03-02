@@ -5,7 +5,7 @@ const SMALL_SORT_THRESH: usize = 32;
 use std::cmp::Ordering;
 use std::mem::MaybeUninit;
 
-mod glide;
+mod drift;
 mod logical_run;
 
 #[inline(always)]
@@ -75,5 +75,5 @@ pub fn slow_path_sort<T, F: FnMut(&T, &T) -> bool>(v: &mut [T], is_less: &mut F)
             scratch.capacity(),
         )
     };
-    glide::sort(v, scratch_slice, false, is_less);
+    drift::sort(v, scratch_slice, false, is_less);
 }
