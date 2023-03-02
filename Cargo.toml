@@ -2,7 +2,6 @@
 name = "driftsort"
 version = "0.1.0"
 edition = "2021"
-type = "lib"
 authors = ["Orson Peters <orsonpeters@gmail.com>", "Lukas Bergdoll <lukas.bergdoll@gmail.com>"]
 
 [lib]
