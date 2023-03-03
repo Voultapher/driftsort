@@ -121,7 +121,7 @@ impl LengthAndSorted {
     }
 }
 
-#[inline(always)]
+#[inline(never)]
 pub fn sort(
     sort_ops: &mut dyn crate::SortOps2,
     eager_sort: bool,
