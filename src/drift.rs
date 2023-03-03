@@ -1,5 +1,55 @@
-use crate::logical_run::LogicalRun;
 use core::mem::MaybeUninit;
+
+use crate::LengthAndSorted;
+
+// Unstable shim.
+#[must_use]
+#[inline(always)]
+pub const fn uninit_array<T, const N: usize>() -> [MaybeUninit<T>; N] {
+    // SAFETY: An uninitialized `[MaybeUninit<_>; LEN]` is valid.
+    unsafe { MaybeUninit::<[MaybeUninit<T>; N]>::uninit().assume_init() }
+}
+
+// Lazy logical runs as in Glidesort.
+#[inline(always)]
+fn logical_merge<T, F: FnMut(&T, &T) -> bool>(
+    v: &mut [T],
+    scratch: &mut [MaybeUninit<T>],
+    left: LengthAndSorted,
+    right: LengthAndSorted,
+    orig_array_len: usize,
+    is_less: &mut F,
+) -> LengthAndSorted {
+    // We *need* to physically merge if the combined runs do not fit in the
+    // scratch space anymore (as this would mean we are no longer able to
+    // to quicksort them).
+    //
+    // If both our inputs are sorted, it makes sense to merge them.
+    //
+    // Finally, if only one of our inputs is sorted we quicksort the other one
+    // and merge iff the combined length is significant enough to be worth
+    // it to switch to merges. We consider it significant if the combined
+    // length is at least sqrt of the original array length. Otherwise we simply
+    // forget the run is sorted and treat it as unsorted data.
+    let n = v.len();
+    let doesnt_fit_in_scratch = n > scratch.len();
+    let num_sorted_plus_significance = (n.saturating_mul(n) >= orig_array_len) as usize
+        + (left.sorted() as usize)
+        + (right.sorted() as usize);
+
+    if doesnt_fit_in_scratch || num_sorted_plus_significance >= 2 {
+        if !left.sorted() {
+            crate::stable_quicksort(&mut v[..left.len()], scratch, is_less);
+        }
+        if !right.sorted() {
+            crate::stable_quicksort(&mut v[left.len()..], scratch, is_less);
+        }
+        crate::physical_merge(v, scratch, left.len(), is_less);
+        LengthAndSorted::new(n, true)
+    } else {
+        LengthAndSorted::new(n, false)
+    }
+}
 
 // Nearly-Optimal Mergesorts: Fast, Practical Sorting Methods That Optimally
 // Adapt to Existing Runs by J. Ian Munro and Sebastian Wild.
@@ -40,7 +90,7 @@ fn merge_tree_scale_factor(n: usize) -> u64 {
 }
 
 // Note: merge_tree_depth output is < 64 when left < right as f*x and f*y must
-// differ in some bit.
+// differ in some bit, and is <= 64 always.
 #[inline(always)]
 fn merge_tree_depth(left: usize, mid: usize, right: usize, scale_factor: u64) -> u8 {
     let x = left as u64 + mid as u64;
@@ -48,132 +98,90 @@ fn merge_tree_depth(left: usize, mid: usize, right: usize, scale_factor: u64) ->
     ((scale_factor * x) ^ (scale_factor * y)).leading_zeros() as u8
 }
 
-/// A stack of merge nodes. For each node we track its desired depth in the
-/// merge tree, as well as its left child.
-struct MergeStack {
-    left_children: [MaybeUninit<LogicalRun>; 64],
-    desired_depths: [MaybeUninit<u8>; 64],
-    len: usize,
-}
-
-impl MergeStack {
-    /// Creates an empty merge stack.
-    #[inline(always)]
-    fn new() -> Self {
-        unsafe {
-            // SAFETY: an array of MaybeUninit's is trivially init.
-            Self {
-                left_children: MaybeUninit::uninit().assume_init(),
-                desired_depths: MaybeUninit::uninit().assume_init(),
-                len: 0,
-            }
-        }
-    }
-
-    /// Push a merge node on the stack given its left child and desired depth.
-    ///
-    /// SAFETY: the stack may not be full (64 elements).
-    #[inline(always)]
-    unsafe fn push_node_unchecked(&mut self, left_child: LogicalRun, desired_depth: u8) {
-        unsafe {
-            *self.left_children.get_unchecked_mut(self.len) = MaybeUninit::new(left_child);
-            *self.desired_depths.get_unchecked_mut(self.len) = MaybeUninit::new(desired_depth);
-            self.len += 1;
-        }
-    }
-
-    /// Pop a merge node off the stack, returning its left child.
-    #[inline(always)]
-    fn pop_node(&mut self) -> Option<LogicalRun> {
-        if self.len == 0 {
-            return None;
-        }
-
-        // SAFETY: len > 0 guarantees this is initialized by a previous push.
-        self.len -= 1;
-        Some(unsafe {
-            self.left_children
-                .get_unchecked(self.len)
-                .assume_init_read()
-        })
-    }
-
-    /// Pops from the top of the stack if the merge node at the top of the stack
-    /// has a desired depth deeper than or equal to the given depth, returning
-    /// the left child of the merge node.
-    #[inline(always)]
-    fn pop_if_deeper_or_eq_to(&mut self, depth: u8) -> Option<LogicalRun> {
-        if self.len == 0 {
-            return None;
-        }
-
-        // SAFETY: len > 0 guarantees this is initialized by a previous push.
-        unsafe {
-            let top_depth = self
-                .desired_depths
-                .get_unchecked(self.len - 1)
-                .assume_init();
-            if top_depth < depth {
-                return None;
-            }
-
-            self.len -= 1;
-            Some(
-                self.left_children
-                    .get_unchecked(self.len)
-                    .assume_init_read(),
-            )
-        }
-    }
-}
-
+#[inline(never)]
 pub fn sort<T, F: FnMut(&T, &T) -> bool>(
     v: &mut [T],
     scratch: &mut [MaybeUninit<T>],
     eager_sort: bool,
     is_less: &mut F,
 ) {
+    if v.len() < 2 {
+        return; // Removing this length check *increases* code size.
+    }
+
     let scale_factor = merge_tree_scale_factor(v.len());
-    let mut merge_stack = MergeStack::new();
 
-    let mut prev_run_start_idx = 0;
-    let mut prev_run;
-    prev_run = LogicalRun::create(v, 0, eager_sort, is_less);
-    while prev_run_start_idx + prev_run.len() < v.len() {
-        let next_run_start_idx = prev_run_start_idx + prev_run.len();
-        let next_run;
-        next_run = LogicalRun::create(v, next_run_start_idx, eager_sort, is_less);
+    // (stack_len, runs, desired_depths) together form a stack maintaining run
+    // information for the powersort heuristic. desired_depths[i] is the desired
+    // depth of the merge node that merges runs[i] with the run that comes after
+    // it.
+    let mut stack_len = 0;
+    let mut runs: [MaybeUninit<LengthAndSorted>; 64] = uninit_array();
+    let mut desired_depths: [MaybeUninit<u8>; 64] = uninit_array();
 
-        let desired_depth = merge_tree_depth(
-            prev_run_start_idx,
-            next_run_start_idx,
-            next_run_start_idx + next_run.len(),
-            scale_factor,
-        );
+    let mut scan_idx = 0;
+    let mut prev_run = LengthAndSorted::new(0, true);
+    loop {
+        // Compute the next run and the desired depth of the merge node between
+        // prev_run and next_run. On the last iteration we create a dummy run
+        // with root-level desired depth to fully collapse the merge tree.
+        let (next_run, desired_depth);
+        if scan_idx < v.len() {
+            next_run = crate::create_run(&mut v[scan_idx..], eager_sort, is_less);
+            desired_depth = merge_tree_depth(
+                scan_idx - prev_run.len(),
+                scan_idx,
+                scan_idx + next_run.len(),
+                scale_factor,
+            );
+        } else {
+            next_run = LengthAndSorted::new(0, true);
+            desired_depth = 0;
+        };
 
-        // Create the left child of our next node and eagerly merge all nodes
-        // with a deeper desired merge depth into it.
-        let mut left_child = prev_run;
-        while let Some(left_descendant) = merge_stack.pop_if_deeper_or_eq_to(desired_depth) {
-            left_child = left_descendant.logical_merge(v, scratch, left_child, is_less);
-        }
-
+        // Process the merge nodes between earlier runs[i] that have a desire to
+        // be deeper in the merge tree than the merge node for the splitpoint
+        // between prev_run and next_run.
         unsafe {
-            // SAFETY: we just maintained the invariant that desired_depth > top_depth.
-            // This means the stack must consist of strictly increasing depths. Since
-            // desired depths are all < 64 this ensures our stack can contain at
-            // most 64 values and we do not overflow, as this is the only place we
-            // ever push to the stack.
-            merge_stack.push_node_unchecked(left_child, desired_depth);
+            // SAFETY: first note that this is the only place we modify stack_len,
+            // runs or desired depths. We maintain the following invariants:
+            //  1. The first stack_len elements of runs/desired_depths are initialized.
+            //  2. For all valid i, desired_depths[i] < desired_depths[i+1].
+            //  3. The sum of all valid runs[i].len() plus prev_run.len() equals
+            //     scan_idx.
+            while stack_len > 0
+                && desired_depths.get_unchecked(stack_len - 1).assume_init() >= desired_depth
+            {
+                // Desired depth greater than the upcoming desired depth, pop
+                // from stack and merge into prev_run.
+                let left = runs.get_unchecked(stack_len - 1).assume_init();
+                let merged_len = left.len() + prev_run.len();
+                let merge_start_idx = scan_idx - merged_len;
+                let v_len = v.len();
+                let sl = v.get_unchecked_mut(merge_start_idx..scan_idx);
+                prev_run = logical_merge(sl, scratch, left, prev_run, v_len, is_less);
+                stack_len -= 1;
+            }
+
+            // We now know that desired_depths[stack_len - 1] < desired_depth,
+            // maintaining our invariant. This also guarantees we don't overflow
+            // the stack as merge_tree_depth(..) <= 64 and thus we can only have
+            // 63 distinct values on the stack before pushing.
+            *runs.get_unchecked_mut(stack_len) = MaybeUninit::new(prev_run);
+            *desired_depths.get_unchecked_mut(stack_len) = MaybeUninit::new(desired_depth);
+            stack_len += 1;
         }
-        prev_run_start_idx = next_run_start_idx;
+
+        // Break before overriding the last run with our dummy run.
+        if scan_idx >= v.len() {
+            break;
+        }
+
+        scan_idx += next_run.len();
         prev_run = next_run;
     }
 
-    // Collapse the stack down to a single logical run and physically sort it.
-    let mut result = prev_run;
-    while let Some(left_child) = merge_stack.pop_node() {
-        result = left_child.logical_merge(v, scratch, result, is_less);
+    if !prev_run.sorted() {
+        crate::stable_quicksort(v, scratch, is_less);
     }
-    result.physical_sort(v, scratch, is_less);
 }

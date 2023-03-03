@@ -6,7 +6,28 @@ use std::cmp::Ordering;
 use std::mem::MaybeUninit;
 
 mod drift;
-mod logical_run;
+
+/// Compactly stores the length of a run, and whether or not it is sorted. This
+/// can always fit in a usize because the maximum slice length is isize::MAX.
+#[derive(Copy, Clone)]
+struct LengthAndSorted(usize);
+
+impl LengthAndSorted {
+    #[inline(always)]
+    pub fn new(length: usize, sorted: bool) -> Self {
+        Self((length << 1) | sorted as usize)
+    }
+
+    #[inline(always)]
+    pub fn sorted(self) -> bool {
+        self.0 & 1 == 1
+    }
+
+    #[inline(always)]
+    pub fn len(self) -> usize {
+        self.0 >> 1
+    }
+}
 
 #[inline(always)]
 pub fn sort<T: Ord>(v: &mut [T]) {
@@ -76,4 +97,14 @@ fn stable_quicksort<T, F: FnMut(&T, &T) -> bool>(
             std::cmp::Ordering::Equal
         }
     })
+}
+
+#[inline(never)]
+fn create_run<T, F: FnMut(&T, &T) -> bool>(
+    el: &mut [T],
+    eager_sort: bool,
+    is_less: &mut F,
+) -> LengthAndSorted {
+    // FIXME
+    LengthAndSorted::new(el.len().min(32), false)
 }
