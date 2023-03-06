@@ -37,7 +37,7 @@ jobs:
       with:
           toolchain: nightly
           override: true
-          components: miri
+          components: miri rust-src
     - name: Get number of CPU cores
       uses: SimenB/github-actions-cpu-cores@v1
       id: cpu-cores
