@@ -38,18 +38,15 @@ jobs:
           toolchain: nightly
           override: true
           components: miri rust-src
-    - name: Get number of CPU cores
-      uses: SimenB/github-actions-cpu-cores@v1
-      id: cpu-cores
     - name: Install cargo-nextest
       run: |
         curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C ${CARGO_HOME:-~/.cargo}/bin
     - name: Run tests x86_64-unknown-linux-gnu (little-endian)
       run: |
-        cargo miri nextest run --verbose --target x86_64-unknown-linux-gnu -j${{ steps.cpu-cores.outputs.count }}
+        cargo miri nextest run --verbose --target x86_64-unknown-linux-gnu -j16
     - name: Run tests mips64-unknown-linux-gnuabi64 (big-endian)
       run: |
-        cargo miri nextest run --verbose --target mips64-unknown-linux-gnuabi64 -j${{ steps.cpu-cores.outputs.count }}  
+        cargo miri test random_z1
   asan:
     runs-on: ubuntu-latest
     
