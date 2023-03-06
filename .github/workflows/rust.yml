@@ -18,11 +18,10 @@ jobs:
     steps:
     - uses: actions/checkout@v2
     - name: Install latest nightly
-        uses: actions-rs/toolchain@v1
-        with:
-            toolchain: nightly
-            override: true
-            # components: rustfmt, clippy
+      uses: actions-rs/toolchain@v1
+      with:
+          toolchain: nightly
+          override: true
     - name: Build
       run: cargo build --verbose
     - name: Run tests
@@ -34,11 +33,11 @@ jobs:
     steps:
     - uses: actions/checkout@v2
     - name: Install latest nightly
-        uses: actions-rs/toolchain@v1
-        with:
-            toolchain: nightly
-            override: true
-            components: miri
+      uses: actions-rs/toolchain@v1
+      with:
+          toolchain: nightly
+          override: true
+          components: miri
     - name: Run tests x86_64-unknown-linux-gnu
       run: |
         cargo miri test --verbose --target x86_64-unknown-linux-gnu
@@ -52,11 +51,11 @@ jobs:
     steps:
     - uses: actions/checkout@v2
     - name: Install latest nightly
-        uses: actions-rs/toolchain@v1
-        with:
-            toolchain: nightly
-            override: true
-            components: rustfmt, clippy
+      uses: actions-rs/toolchain@v1
+      with:
+          toolchain: nightly
+          override: true
+          components: rustfmt, clippy
     - name: Build
       run: RUSTFLAGS=-Zsanitizer=address cargo build --release
     - name: Run tests (TODO loop)
@@ -68,11 +67,11 @@ jobs:
     steps:
     - uses: actions/checkout@v2
     - name: Install latest nightly
-        uses: actions-rs/toolchain@v1
-        with:
-            toolchain: nightly
-            override: true
-            components: rustfmt
+      uses: actions-rs/toolchain@v1
+      with:
+          toolchain: nightly
+          override: true
+          components: rustfmt
     - name: Check rustfmt
       run: cargo fmt --check
-      # TODO clippy?
+      # TODO clippy xx?
