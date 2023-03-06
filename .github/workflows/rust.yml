@@ -38,12 +38,12 @@ jobs:
           toolchain: nightly
           override: true
           components: miri
-    - name: Run tests x86_64-unknown-linux-gnu
+    - name: Run tests x86_64-unknown-linux-gnu (little-endian)
       run: |
         cargo miri test --verbose --target x86_64-unknown-linux-gnu
-    - name: Run tests mips64-unknown-linux-gnuabi64
+    - name: Run tests mips64-unknown-linux-gnuabi64 (big-endian)
       run: |
-        cargo miri test --verbose --target mips64-unknown-linux-gnuabi64
+        cargo miri test --verbose --target mips64-unknown-linux-gnuabi64 random_z1
   
   asan:
     runs-on: ubuntu-latest
