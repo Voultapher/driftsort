@@ -56,10 +56,10 @@ jobs:
           toolchain: nightly
           override: true
           components: rustfmt, clippy
-    - name: Build
-      run: RUSTFLAGS=-Zsanitizer=address cargo build --release
-    - name: Run tests (TODO loop)
-      run: RUSTFLAGS=-Zsanitizer=address cargo test --release
+    - name: Run tests 
+      run: bash -c "for i in {0..100}; do RUSTFLAGS=-Zsanitizer=address cargo test --no-default-features --release; done"
+    - name: Run tests with large test sizes
+      run: bash -c "for i in {0..2}; do RUSTFLAGS=-Zsanitizer=address cargo test --release; done"
 
   lint:
     runs-on: ubuntu-latest
@@ -74,4 +74,4 @@ jobs:
           components: rustfmt
     - name: Check rustfmt
       run: cargo fmt --check
-      # TODO clippy xx?
+      # TODO clippy?
