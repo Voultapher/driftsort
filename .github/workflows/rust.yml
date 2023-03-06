@@ -43,7 +43,7 @@ jobs:
       id: cpu-cores
     - name: Install cargo-nextest
       run: |
-        cargo install cargo-nextest
+        curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C ${CARGO_HOME:-~/.cargo}/bin
     - name: Run tests x86_64-unknown-linux-gnu (little-endian)
       run: |
         cargo miri nextest run --verbose --target x86_64-unknown-linux-gnu -j${{ steps.cpu-cores.outputs.count }}
