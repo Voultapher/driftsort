@@ -116,8 +116,8 @@ pub fn sort<T, F: FnMut(&T, &T) -> bool>(
     // depth of the merge node that merges runs[i] with the run that comes after
     // it.
     let mut stack_len = 0;
-    let mut runs: [MaybeUninit<LengthAndSorted>; 64] = uninit_array();
-    let mut desired_depths: [MaybeUninit<u8>; 64] = uninit_array();
+    let mut runs: [MaybeUninit<LengthAndSorted>; 65] = uninit_array();
+    let mut desired_depths: [MaybeUninit<u8>; 65] = uninit_array();
 
     let mut scan_idx = 0;
     let mut prev_run = LengthAndSorted::new(0, true);
@@ -166,7 +166,7 @@ pub fn sort<T, F: FnMut(&T, &T) -> bool>(
             // We now know that desired_depths[stack_len - 1] < desired_depth,
             // maintaining our invariant. This also guarantees we don't overflow
             // the stack as merge_tree_depth(..) <= 64 and thus we can only have
-            // 63 distinct values on the stack before pushing.
+            // 64 distinct values on the stack before pushing.
             *runs.get_unchecked_mut(stack_len) = MaybeUninit::new(prev_run);
             *desired_depths.get_unchecked_mut(stack_len) = MaybeUninit::new(desired_depth);
             stack_len += 1;
