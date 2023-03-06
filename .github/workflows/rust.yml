@@ -43,10 +43,10 @@ jobs:
         curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C ${CARGO_HOME:-~/.cargo}/bin
     - name: Run tests x86_64-unknown-linux-gnu (little-endian)
       run: |
-        cargo miri nextest run --verbose --target x86_64-unknown-linux-gnu -j8
+        cargo miri nextest run --verbose --target x86_64-unknown-linux-gnu -j4
     - name: Run tests mips64-unknown-linux-gnuabi64 (big-endian)
       run: |
-        cargo miri test random_z1
+        cargo miri test --verbose --target mips64-unknown-linux-gnuabi64 random_z1
   asan:
     runs-on: ubuntu-latest
     
