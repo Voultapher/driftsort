@@ -37,7 +37,7 @@ jobs:
       with:
           toolchain: nightly
           override: true
-          components: miri rust-src
+          components: miri, rust-src
     - name: Install cargo-nextest
       run: |
         curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C ${CARGO_HOME:-~/.cargo}/bin
