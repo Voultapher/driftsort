@@ -94,9 +94,9 @@ fn stable_quicksort<T, F: FnMut(&T, &T) -> bool>(
     scratch: &mut [MaybeUninit<T>],
     is_less: &mut F,
 ) {
-    // Limit the number of imbalanced partitions to `floor(log2(len)) + 1`.
-    let limit = usize::BITS - v.len().leading_zeros();
-
+    // Limit the number of imbalanced partitions to `2 * floor(log2(len))`.
+    // The binary OR by one is used to eliminate the zero-check in the logarithm.
+    let limit = 2 * (v.len() | 1).ilog2();
     crate::quicksort::stable_quicksort(v, scratch, limit, is_less);
 }
 
