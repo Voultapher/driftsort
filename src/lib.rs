@@ -102,10 +102,18 @@ fn stable_quicksort<T, F: FnMut(&T, &T) -> bool>(
 
 #[inline(never)]
 fn create_run<T, F: FnMut(&T, &T) -> bool>(
-    el: &mut [T],
-    _eager_sort: bool,
-    _is_less: &mut F,
+    v: &mut [T],
+    eager_sort: bool,
+    is_less: &mut F,
 ) -> LengthAndSorted {
-    // FIXME
-    LengthAndSorted::new_unsorted(el.len().min(32))
+    // FIXME: run detection.
+    
+    // TODO: unlikely?
+    if eager_sort {
+        let len = v.len().min(32);
+        smallsort::sort_small(&mut v[..len], is_less);
+        LengthAndSorted::new_sorted(len)
+    } else {
+        LengthAndSorted::new_unsorted(v.len().min(32))
+    }
 }
