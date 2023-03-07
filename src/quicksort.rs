@@ -156,6 +156,15 @@ where
     let len = v.len();
     let arr = v.as_mut_ptr();
 
+    // Inside the main partitioning loop we MUST NOT compare out stack copy of the pivot value with
+    // the original value in the slice `v`. If we just write the value as pointed to by `src` into
+    // `buf` as it was in the input slice `v` we would risk that the call to the user-provided
+    // `is_less` modifies the value pointed to by `src`. This could be UB for types such as
+    // `Mutex<Option<Box<String>>>` where during the comparison it replaces the box with None,
+    // leading to double free. As the value written back into `v` from `buf` did not observe that
+    // modification.
+
+    // SAFETY: TODO
     unsafe {
         assert!(scratch.len() >= len);
         let buf = MaybeUninit::slice_as_mut_ptr(scratch);
@@ -185,10 +194,11 @@ where
         let mut reverse_out = buf.add(len);
         for i in 0..len {
             reverse_out = reverse_out.sub(1);
-            
-            // We move the pivot in its correct place later.
-            // This should only happen once and should be predicted very well.
+
+            // This should only happen once and should be predicted very well. This is required to
+            // handle types with interior mutability. See comment above for more info.
             if i == pivot_pos {
+                // We move the pivot in its correct place later.
                 if pivot_goes_left {
                     pivot_partioned_ptr = buf.add(l_count);
                     l_count += 1;
@@ -206,7 +216,7 @@ where
                 reverse_out.add(l_count)
             };
             ptr::copy_nonoverlapping(src, dst, 1);
-            
+
             l_count += less_than_pivot as usize;
         }
 
