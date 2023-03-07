@@ -95,7 +95,6 @@ fn merge_tree_depth(left: usize, mid: usize, right: usize, scale_factor: u64) ->
     ((scale_factor * x) ^ (scale_factor * y)).leading_zeros() as u8
 }
 
-#[inline(never)]
 pub fn sort<T, F: FnMut(&T, &T) -> bool>(
     v: &mut [T],
     scratch: &mut [MaybeUninit<T>],
