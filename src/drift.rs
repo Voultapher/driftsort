@@ -114,13 +114,13 @@ pub fn sort<T, F: FnMut(&T, &T) -> bool>(
     // depth of the merge node that merges runs[i] with the run that comes after
     // it.
     let mut stack_len = 0;
-    let mut run_storage = MaybeUninit::<[LengthAndSorted; 65]>::uninit();
+    let mut run_storage = MaybeUninit::<[LengthAndSorted; 66]>::uninit();
     let runs: *mut LengthAndSorted = run_storage.as_mut_ptr().cast();
-    let mut desired_depth_storage = MaybeUninit::<[u8; 65]>::uninit();
+    let mut desired_depth_storage = MaybeUninit::<[u8; 66]>::uninit();
     let desired_depths: *mut u8 = desired_depth_storage.as_mut_ptr().cast();
 
     let mut scan_idx = 0;
-    let mut prev_run = LengthAndSorted::new_sorted(0);
+    let mut prev_run = LengthAndSorted::new_sorted(0); // Initial dummy run.
     loop {
         // Compute the next run and the desired depth of the merge node between
         // prev_run and next_run. On the last iteration we create a dummy run
@@ -146,10 +146,10 @@ pub fn sort<T, F: FnMut(&T, &T) -> bool>(
             // SAFETY: first note that this is the only place we modify stack_len,
             // runs or desired depths. We maintain the following invariants:
             //  1. The first stack_len elements of runs/desired_depths are initialized.
-            //  2. For all valid i, desired_depths[i] < desired_depths[i+1].
+            //  2. For all valid i > 0, desired_depths[i] < desired_depths[i+1].
             //  3. The sum of all valid runs[i].len() plus prev_run.len() equals
             //     scan_idx.
-            while stack_len > 0
+            while stack_len > 1
                 && *desired_depths.add(stack_len - 1) >= desired_depth
             {
                 // Desired depth greater than the upcoming desired depth, pop
@@ -165,7 +165,8 @@ pub fn sort<T, F: FnMut(&T, &T) -> bool>(
             // We now know that desired_depths[stack_len - 1] < desired_depth,
             // maintaining our invariant. This also guarantees we don't overflow
             // the stack as merge_tree_depth(..) <= 64 and thus we can only have
-            // 64 distinct values on the stack before pushing.
+            // 64 distinct values on the stack before pushing, plus our initial
+            // dummy run, while our capacity is 66.
             *runs.add(stack_len) = prev_run;
             *desired_depths.add(stack_len) = desired_depth;
             stack_len += 1;
