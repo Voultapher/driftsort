@@ -1,4 +1,4 @@
-#![allow(dead_code, unused_variables)]
+#![feature(core_intrinsics, ptr_sub_ptr, maybe_uninit_slice)]
 
 const SMALL_SORT_THRESH: usize = 32;
 
@@ -6,6 +6,7 @@ use std::cmp::Ordering;
 use std::mem::MaybeUninit;
 
 mod drift;
+mod quicksort;
 
 /// Compactly stores the length of a run, and whether or not it is sorted. This
 /// can always fit in a usize because the maximum slice length is isize::MAX.
@@ -70,8 +71,8 @@ fn slow_path_sort<T, F: FnMut(&T, &T) -> bool>(v: &mut [T], is_less: &mut F) {
 #[inline(never)]
 fn physical_merge<T, F: FnMut(&T, &T) -> bool>(
     v: &mut [T],
-    scratch: &mut [MaybeUninit<T>],
-    mid: usize,
+    _scratch: &mut [MaybeUninit<T>],
+    _mid: usize,
     is_less: &mut F,
 ) {
     // FIXME
@@ -92,23 +93,17 @@ fn stable_quicksort<T, F: FnMut(&T, &T) -> bool>(
     scratch: &mut [MaybeUninit<T>],
     is_less: &mut F,
 ) {
-    // FIXME
-    v.sort_by(|a, b| {
-        if is_less(a, b) {
-            std::cmp::Ordering::Less
-        } else if is_less(b, a) {
-            std::cmp::Ordering::Greater
-        } else {
-            std::cmp::Ordering::Equal
-        }
-    })
+    // Limit the number of imbalanced partitions to `floor(log2(len)) + 1`.
+    let limit = usize::BITS - v.len().leading_zeros();
+
+    crate::quicksort::stable_quicksort(v, scratch, limit, is_less);
 }
 
 #[inline(never)]
 fn create_run<T, F: FnMut(&T, &T) -> bool>(
     el: &mut [T],
-    eager_sort: bool,
-    is_less: &mut F,
+    _eager_sort: bool,
+    _is_less: &mut F,
 ) -> LengthAndSorted {
     // FIXME
     LengthAndSorted::new_unsorted(el.len().min(32))
