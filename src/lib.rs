@@ -107,7 +107,7 @@ fn create_run<T, F: FnMut(&T, &T) -> bool>(
     is_less: &mut F,
 ) -> LengthAndSorted {
     // FIXME: run detection.
-    
+
     // TODO: unlikely?
     if eager_sort {
         let len = v.len().min(32);
