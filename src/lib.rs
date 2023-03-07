@@ -77,4 +77,3 @@ fn stable_quicksort<T, F: FnMut(&T, &T) -> bool>(
         }
     })
 }
-
