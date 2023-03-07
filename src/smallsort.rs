@@ -13,7 +13,6 @@ where
     }
 }
 
-
 // When dropped, copies from `src` into `dest`.
 struct InsertionHole<T> {
     src: *const T,
@@ -27,7 +26,6 @@ impl<T> Drop for InsertionHole<T> {
         }
     }
 }
-
 
 /// Inserts `v[v.len() - 1]` into pre-sorted sequence `v[..v.len() - 1]` so that whole `v[..]`
 /// becomes sorted.

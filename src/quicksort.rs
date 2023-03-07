@@ -1,6 +1,6 @@
 use core::mem;
+use core::mem::ManuallyDrop;
 use core::ptr;
-use std::mem::ManuallyDrop;
 
 // Switch to a dedicated small array sorting algorithm below this threshold.
 const SMALL_SORT_THRESHOLD: usize = 20;
@@ -22,23 +22,32 @@ pub fn stable_quicksort<T, F>(
 {
     loop {
         if v.len() <= SMALL_SORT_THRESHOLD {
-            return crate::smallsort::sort_small(v, is_less);
+            crate::smallsort::sort_small(v, is_less);
+            return;
         }
 
         if limit == 0 {
-            return crate::drift::sort(v, scratch, true, is_less);
+            crate::drift::sort(v, scratch, true, is_less);
+            return;
         }
         limit -= 1;
 
         let pivot = choose_pivot(v, is_less);
         let mid = stable_partition(v, scratch, pivot, is_less);
+
+        // Empty left partition almost surely means second time we use this pivot.
+        // Swap to partition that filters equal elements on the left.
+        if mid == 0 {
+            let mid = stable_partition(v, scratch, pivot, &mut |a, b| !is_less(b, a));
+            v = &mut v[mid..];
+            continue;
+        }
+
         let (left, right) = v.split_at_mut(mid);
         stable_quicksort(left, scratch, limit, is_less);
         v = right;
     }
 }
-
-
 
 /// Selects a pivot from left, right.
 ///
@@ -135,7 +144,6 @@ where
     }
 }
 
-
 /// Partitions `v` into elements smaller than `pivot`, followed by elements greater than or equal
 /// to `pivot`.
 ///
@@ -163,7 +171,7 @@ where
             value: ManuallyDrop<T>,
             hole: *mut T,
         }
-        
+
         impl<T> Drop for PivotGuard<T> {
             fn drop(&mut self) {
                 unsafe {
