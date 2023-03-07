@@ -6,6 +6,7 @@ use std::cmp::Ordering;
 use std::mem::MaybeUninit;
 
 mod drift;
+mod merge;
 mod quicksort;
 mod smallsort;
 
@@ -72,20 +73,11 @@ fn slow_path_sort<T, F: FnMut(&T, &T) -> bool>(v: &mut [T], is_less: &mut F) {
 #[inline(never)]
 fn physical_merge<T, F: FnMut(&T, &T) -> bool>(
     v: &mut [T],
-    _scratch: &mut [MaybeUninit<T>],
-    _mid: usize,
+    scratch: &mut [MaybeUninit<T>],
+    mid: usize,
     is_less: &mut F,
 ) {
-    // FIXME
-    v.sort_by(|a, b| {
-        if is_less(a, b) {
-            std::cmp::Ordering::Less
-        } else if is_less(b, a) {
-            std::cmp::Ordering::Greater
-        } else {
-            std::cmp::Ordering::Equal
-        }
-    });
+    merge::merge(v, scratch, mid, is_less)
 }
 
 #[inline(never)]
