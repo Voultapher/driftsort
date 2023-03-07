@@ -3,24 +3,14 @@ use core::mem::ManuallyDrop;
 use core::ptr;
 
 /// Sorts `v` using strategies optimized for small sizes.
-pub fn sort_small<T, F>(v: &mut [T], is_less: &mut F) -> bool
+pub fn sort_small<T, F>(v: &mut [T], is_less: &mut F)
 where
     F: FnMut(&T, &T) -> bool,
 {
-    const MAX_LEN_SMALL_SORT: usize = 20;
-
-    let len = v.len();
-
-    if intrinsics::unlikely(len > MAX_LEN_SMALL_SORT) {
-        return false;
-    }
-
     // TODO more sophisticated approach.
-    if len >= 2 {
+    if v.len() >= 2 {
         insertion_sort_shift_left(v, 1, is_less);
     }
-
-    true
 }
 
 
