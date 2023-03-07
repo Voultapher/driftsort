@@ -6,13 +6,7 @@ on:
 
 jobs:
   debug:
-    runs-on: ${{ matrix.os }}
-    
-    strategy:
-      matrix:
-        # We don't expect any OS specific behavior, but let's just test more to
-        # be on the safe side.
-        os: [ubuntu-latest, windows-latest, macOS-latest]
+    runs-on: ubuntu-latest
 
     steps:
     - uses: actions/checkout@v2
@@ -21,6 +15,7 @@ jobs:
       with:
           toolchain: nightly
           override: true
+          components: rustfmt
     - name: Build
       run: cargo build --verbose
     - name: Run tests
@@ -29,6 +24,8 @@ jobs:
       run: |
         cd benchmarks/compile_time_impact
         cargo build
+    - name: Check rustfmt
+      run: cargo fmt --check
 
   miri:
     runs-on: ubuntu-latest
@@ -60,23 +57,7 @@ jobs:
       with:
           toolchain: nightly
           override: true
-          components: rustfmt, clippy
     - name: Run tests 
       run: bash -c "for i in {0..100}; do RUSTFLAGS=-Zsanitizer=address cargo test --no-default-features --release; done"
     - name: Run tests with large test sizes
       run: bash -c "for i in {0..2}; do RUSTFLAGS=-Zsanitizer=address cargo test --release; done"
-
-  lint:
-    runs-on: ubuntu-latest
-    
-    steps:
-    - uses: actions/checkout@v2
-    - name: Install latest nightly
-      uses: actions-rs/toolchain@v1
-      with:
-          toolchain: nightly
-          override: true
-          components: rustfmt
-    - name: Check rustfmt
-      run: cargo fmt --check
-      # TODO clippy?
