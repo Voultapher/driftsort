@@ -2,7 +2,6 @@ use core::mem::MaybeUninit;
 
 use crate::LengthAndSorted;
 
-
 // Lazy logical runs as in Glidesort.
 #[inline(always)]
 fn logical_merge<T, F: FnMut(&T, &T) -> bool>(
@@ -148,9 +147,7 @@ pub fn sort<T, F: FnMut(&T, &T) -> bool>(
             //  2. For all valid i > 0, desired_depths[i] < desired_depths[i+1].
             //  3. The sum of all valid runs[i].len() plus prev_run.len() equals
             //     scan_idx.
-            while stack_len > 1
-                && *desired_depths.add(stack_len - 1) >= desired_depth
-            {
+            while stack_len > 1 && *desired_depths.add(stack_len - 1) >= desired_depth {
                 // Desired depth greater than the upcoming desired depth, pop
                 // left neighbor run from stack and merge into prev_run.
                 let left = *runs.add(stack_len - 1);
