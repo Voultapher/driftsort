@@ -79,6 +79,10 @@ fn logical_merge<T, F: FnMut(&T, &T) -> bool>(
 // overflow.
 #[inline(always)]
 fn merge_tree_scale_factor(n: usize) -> u64 {
+    if usize::BITS > u64::BITS {
+        panic!("Platform not supported");
+    }
+
     ((1 << 62) + n as u64 - 1) / n as u64
 }
 
