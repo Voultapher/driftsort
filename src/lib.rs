@@ -1,4 +1,4 @@
-#![feature(core_intrinsics, ptr_sub_ptr, maybe_uninit_slice)]
+#![feature(ptr_sub_ptr, maybe_uninit_slice)]
 
 const SMALL_SORT_THRESH: usize = 32;
 
