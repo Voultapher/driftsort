@@ -2,13 +2,6 @@ use core::mem::MaybeUninit;
 
 use crate::LengthAndSorted;
 
-// Unstable shim.
-#[must_use]
-#[inline(always)]
-pub const fn uninit_array<T, const N: usize>() -> [MaybeUninit<T>; N] {
-    // SAFETY: An uninitialized `[MaybeUninit<_>; LEN]` is valid.
-    unsafe { MaybeUninit::<[MaybeUninit<T>; N]>::uninit().assume_init() }
-}
 
 // Lazy logical runs as in Glidesort.
 #[inline(always)]
@@ -117,8 +110,10 @@ pub fn sort<T, F: FnMut(&T, &T) -> bool>(
     // depth of the merge node that merges runs[i] with the run that comes after
     // it.
     let mut stack_len = 0;
-    let mut runs: [MaybeUninit<LengthAndSorted>; 65] = uninit_array();
-    let mut desired_depths: [MaybeUninit<u8>; 65] = uninit_array();
+    let mut run_storage = MaybeUninit::<[LengthAndSorted; 65]>::uninit();
+    let runs: *mut LengthAndSorted = run_storage.as_mut_ptr().cast();
+    let mut desired_depth_storage = MaybeUninit::<[u8; 65]>::uninit();
+    let desired_depths: *mut u8 = desired_depth_storage.as_mut_ptr().cast();
 
     let mut scan_idx = 0;
     let mut prev_run = LengthAndSorted::new(0, true);
@@ -151,11 +146,11 @@ pub fn sort<T, F: FnMut(&T, &T) -> bool>(
             //  3. The sum of all valid runs[i].len() plus prev_run.len() equals
             //     scan_idx.
             while stack_len > 0
-                && desired_depths.get_unchecked(stack_len - 1).assume_init() >= desired_depth
+                && *desired_depths.add(stack_len - 1) >= desired_depth
             {
                 // Desired depth greater than the upcoming desired depth, pop
-                // from stack and merge into prev_run.
-                let left = runs.get_unchecked(stack_len - 1).assume_init();
+                // left neighbor run from stack and merge into prev_run.
+                let left = *runs.add(stack_len - 1);
                 let merged_len = left.len() + prev_run.len();
                 let merge_start_idx = scan_idx - merged_len;
                 let merge_slice = v.get_unchecked_mut(merge_start_idx..scan_idx);
@@ -167,8 +162,8 @@ pub fn sort<T, F: FnMut(&T, &T) -> bool>(
             // maintaining our invariant. This also guarantees we don't overflow
             // the stack as merge_tree_depth(..) <= 64 and thus we can only have
             // 64 distinct values on the stack before pushing.
-            *runs.get_unchecked_mut(stack_len) = MaybeUninit::new(prev_run);
-            *desired_depths.get_unchecked_mut(stack_len) = MaybeUninit::new(desired_depth);
+            *runs.add(stack_len) = prev_run;
+            *desired_depths.add(stack_len) = desired_depth;
             stack_len += 1;
         }
 
