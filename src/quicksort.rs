@@ -1,12 +1,17 @@
-use core::cmp;
 use core::mem;
 use core::ptr;
 use std::mem::ManuallyDrop;
 
+// Switch to a dedicated small array sorting algorithm below this threshold.
+const SMALL_SORT_THRESHOLD: usize = 20;
+
+// Recursively select a pseudomedian if above this threshold.
+const PSEUDO_MEDIAN_REC_THRESHOLD: usize = 64;
+
 /// Sorts `v` recursively.
 ///
-/// `limit` is the number of allowed imbalanced partitions before switching to `heapsort`. If zero,
-/// this function will immediately switch to heapsort.
+/// `limit` ensures we do not stack overflow and do not go quadratic. If reached
+/// we switch to purely mergesort by eager sorting.
 pub fn stable_quicksort<T, F>(
     mut v: &mut [T],
     scratch: &mut [mem::MaybeUninit<T>],
@@ -15,57 +20,25 @@ pub fn stable_quicksort<T, F>(
 ) where
     F: FnMut(&T, &T) -> bool,
 {
-    // True if the last partitioning was reasonably balanced.
-    let mut was_good_partition = true;
-
     loop {
-        let len = v.len();
-
-        if crate::smallsort::sort_small(v, is_less) {
-            return;
+        if v.len() <= SMALL_SORT_THRESHOLD {
+            return crate::smallsort::sort_small(v, is_less);
         }
 
         if limit == 0 {
-            // TODO fallback.
-            v.sort_by(|a, b| {
-                if is_less(a, b) {
-                    std::cmp::Ordering::Less
-                } else if is_less(b, a) {
-                    std::cmp::Ordering::Greater
-                } else {
-                    std::cmp::Ordering::Equal
-                }
-            });
-            return;
+            return crate::drift::sort(v, scratch, true, is_less);
         }
-
-        limit -= was_good_partition as u32;
+        limit -= 1;
 
         let pivot = choose_pivot(v, is_less);
-
         let mid = stable_partition(v, scratch, pivot, is_less);
-        was_good_partition = cmp::min(mid, len - mid) >= len / 8;
-
-        // Split the slice into `left`, `pivot`, and `right`.
         let (left, right) = v.split_at_mut(mid);
-        let (_, right) = right.split_at_mut(1);
-
-        // Recurse into the shorter side only in order to minimize the total number of recursive
-        // calls and consume less stack space. Then just continue with the longer side (this is
-        // akin to tail recursion).
-        if left.len() < right.len() {
-            stable_quicksort(left, scratch, limit, is_less);
-            v = right;
-        } else {
-            stable_quicksort(right, scratch, limit, is_less);
-            v = left;
-        }
+        stable_quicksort(left, scratch, limit, is_less);
+        v = right;
     }
 }
 
 
-// Recursively select a pseudomedian if above this threshold.
-const PSEUDO_MEDIAN_REC_THRESHOLD: usize = 64;
 
 /// Selects a pivot from left, right.
 ///
