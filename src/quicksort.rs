@@ -186,6 +186,7 @@ where
         for i in 0..len {
             reverse_out = reverse_out.sub(1);
             
+            // We move the pivot in its correct place later.
             // This should only happen once and should be predicted very well.
             if i == pivot_pos {
                 if pivot_goes_left {
@@ -209,7 +210,7 @@ where
             l_count += less_than_pivot as usize;
         }
 
-        // Copy pivot_val into it's correct position.
+        // Move pivot into its correct position.
         ptr::copy_nonoverlapping(&*pivot.value, pivot_partioned_ptr, 1);
         core::mem::forget(pivot);
 
