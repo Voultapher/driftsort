@@ -31,9 +31,9 @@ fn logical_merge<T, F: FnMut(&T, &T) -> bool>(
     // it to switch to merges. We consider it significant if the combined
     // length is at least sqrt of the original array length. Otherwise we simply
     // forget the run is sorted and treat it as unsorted data.
-    let n = v.len();
-    let doesnt_fit_in_scratch = n > scratch.len();
-    let num_sorted_plus_significance = (n.saturating_mul(n) >= orig_array_len) as usize
+    let len = v.len();
+    let doesnt_fit_in_scratch = len > scratch.len();
+    let num_sorted_plus_significance = (len.saturating_mul(len) >= orig_array_len) as usize
         + (left.sorted() as usize)
         + (right.sorted() as usize);
 
@@ -45,9 +45,9 @@ fn logical_merge<T, F: FnMut(&T, &T) -> bool>(
             crate::stable_quicksort(&mut v[left.len()..], scratch, is_less);
         }
         crate::physical_merge(v, scratch, left.len(), is_less);
-        LengthAndSorted::new(n, true)
+        LengthAndSorted::new(len, true)
     } else {
-        LengthAndSorted::new(n, false)
+        LengthAndSorted::new(len, false)
     }
 }
 
@@ -105,11 +105,12 @@ pub fn sort<T, F: FnMut(&T, &T) -> bool>(
     eager_sort: bool,
     is_less: &mut F,
 ) {
-    if v.len() < 2 {
+    let len = v.len();
+    if len < 2 {
         return; // Removing this length check *increases* code size.
     }
 
-    let scale_factor = merge_tree_scale_factor(v.len());
+    let scale_factor = merge_tree_scale_factor(len);
 
     // (stack_len, runs, desired_depths) together form a stack maintaining run
     // information for the powersort heuristic. desired_depths[i] is the desired
@@ -126,7 +127,7 @@ pub fn sort<T, F: FnMut(&T, &T) -> bool>(
         // prev_run and next_run. On the last iteration we create a dummy run
         // with root-level desired depth to fully collapse the merge tree.
         let (next_run, desired_depth);
-        if scan_idx < v.len() {
+        if scan_idx < len {
             next_run = crate::create_run(&mut v[scan_idx..], eager_sort, is_less);
             desired_depth = merge_tree_depth(
                 scan_idx - prev_run.len(),
@@ -157,9 +158,8 @@ pub fn sort<T, F: FnMut(&T, &T) -> bool>(
                 let left = runs.get_unchecked(stack_len - 1).assume_init();
                 let merged_len = left.len() + prev_run.len();
                 let merge_start_idx = scan_idx - merged_len;
-                let v_len = v.len();
-                let sl = v.get_unchecked_mut(merge_start_idx..scan_idx);
-                prev_run = logical_merge(sl, scratch, left, prev_run, v_len, is_less);
+                let merge_slice = v.get_unchecked_mut(merge_start_idx..scan_idx);
+                prev_run = logical_merge(merge_slice, scratch, left, prev_run, len, is_less);
                 stack_len -= 1;
             }
 
@@ -173,7 +173,7 @@ pub fn sort<T, F: FnMut(&T, &T) -> bool>(
         }
 
         // Break before overriding the last run with our dummy run.
-        if scan_idx >= v.len() {
+        if scan_idx >= len {
             break;
         }
 
