@@ -14,8 +14,13 @@ struct LengthAndSorted(usize);
 
 impl LengthAndSorted {
     #[inline(always)]
-    pub fn new(length: usize, sorted: bool) -> Self {
-        Self((length << 1) | sorted as usize)
+    pub fn new_sorted(length: usize) -> Self {
+        Self((length << 1) | 1)
+    }
+
+    #[inline(always)]
+    pub fn new_unsorted(length: usize) -> Self {
+        Self((length << 1) | 0)
     }
 
     #[inline(always)]
@@ -106,5 +111,5 @@ fn create_run<T, F: FnMut(&T, &T) -> bool>(
     is_less: &mut F,
 ) -> LengthAndSorted {
     // FIXME
-    LengthAndSorted::new(el.len().min(32), false)
+    LengthAndSorted::new_unsorted(el.len().min(32))
 }

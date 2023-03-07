@@ -38,9 +38,9 @@ fn logical_merge<T, F: FnMut(&T, &T) -> bool>(
             crate::stable_quicksort(&mut v[left.len()..], scratch, is_less);
         }
         crate::physical_merge(v, scratch, left.len(), is_less);
-        LengthAndSorted::new(len, true)
+        LengthAndSorted::new_sorted(len)
     } else {
-        LengthAndSorted::new(len, false)
+        LengthAndSorted::new_unsorted(len)
     }
 }
 
@@ -116,7 +116,7 @@ pub fn sort<T, F: FnMut(&T, &T) -> bool>(
     let desired_depths: *mut u8 = desired_depth_storage.as_mut_ptr().cast();
 
     let mut scan_idx = 0;
-    let mut prev_run = LengthAndSorted::new(0, true);
+    let mut prev_run = LengthAndSorted::new_sorted(0);
     loop {
         // Compute the next run and the desired depth of the merge node between
         // prev_run and next_run. On the last iteration we create a dummy run
@@ -131,7 +131,7 @@ pub fn sort<T, F: FnMut(&T, &T) -> bool>(
                 scale_factor,
             );
         } else {
-            next_run = LengthAndSorted::new(0, true);
+            next_run = LengthAndSorted::new_sorted(0);
             desired_depth = 0;
         };
 
