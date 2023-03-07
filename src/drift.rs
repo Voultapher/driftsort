@@ -1,6 +1,11 @@
+use core::cmp;
 use core::mem::MaybeUninit;
 
 use crate::LengthAndSorted;
+
+// What's the smallest possible sub-slice that is considered a already sorted run and used for
+// merging.
+const MIN_MERGE_SLICE_LEN: usize = 32;
 
 // Lazy logical runs as in Glidesort.
 #[inline(always)]
@@ -9,7 +14,6 @@ fn logical_merge<T, F: FnMut(&T, &T) -> bool>(
     scratch: &mut [MaybeUninit<T>],
     left: LengthAndSorted,
     right: LengthAndSorted,
-    orig_array_len: usize,
     is_less: &mut F,
 ) -> LengthAndSorted {
     // We *need* to physically merge if the combined runs do not fit in the
@@ -24,19 +28,22 @@ fn logical_merge<T, F: FnMut(&T, &T) -> bool>(
     // length is at least sqrt of the original array length. Otherwise we simply
     // forget the run is sorted and treat it as unsorted data.
     let len = v.len();
-    let doesnt_fit_in_scratch = len > scratch.len();
-    let num_sorted_plus_significance = (len.saturating_mul(len) >= orig_array_len) as usize
-        + (left.sorted() as usize)
-        + (right.sorted() as usize);
 
-    if doesnt_fit_in_scratch || num_sorted_plus_significance >= 2 {
+    let can_fit_in_scratch = len <= scratch.len();
+    let should_physical_merge = left.sorted() || right.sorted();
+
+    if !can_fit_in_scratch || should_physical_merge {
         if !left.sorted() {
             crate::stable_quicksort(&mut v[..left.len()], scratch, is_less);
         }
         if !right.sorted() {
             crate::stable_quicksort(&mut v[left.len()..], scratch, is_less);
         }
-        crate::physical_merge(v, scratch, left.len(), is_less);
+
+        if cmp::min(left.len(), right.len()) > 0 {
+            crate::physical_merge(v, scratch, left.len(), is_less);
+        }
+
         LengthAndSorted::new_sorted(len)
     } else {
         LengthAndSorted::new_unsorted(len)
@@ -107,6 +114,9 @@ pub fn sort<T, F: FnMut(&T, &T) -> bool>(
 
     let scale_factor = merge_tree_scale_factor(len);
 
+    // Approx sqrt(len)
+    let min_good_run_len = cmp::max(len.ilog2() as usize, MIN_MERGE_SLICE_LEN);
+
     // (stack_len, runs, desired_depths) together form a stack maintaining run
     // information for the powersort heuristic. desired_depths[i] is the desired
     // depth of the merge node that merges runs[i] with the run that comes after
@@ -125,7 +135,7 @@ pub fn sort<T, F: FnMut(&T, &T) -> bool>(
         // with root-level desired depth to fully collapse the merge tree.
         let (next_run, desired_depth);
         if scan_idx < len {
-            next_run = crate::create_run(&mut v[scan_idx..], eager_sort, is_less);
+            next_run = crate::create_run(&mut v[scan_idx..], min_good_run_len, eager_sort, is_less);
             desired_depth = merge_tree_depth(
                 scan_idx - prev_run.len(),
                 scan_idx,
@@ -154,7 +164,7 @@ pub fn sort<T, F: FnMut(&T, &T) -> bool>(
                 let merged_len = left.len() + prev_run.len();
                 let merge_start_idx = scan_idx - merged_len;
                 let merge_slice = v.get_unchecked_mut(merge_start_idx..scan_idx);
-                prev_run = logical_merge(merge_slice, scratch, left, prev_run, len, is_less);
+                prev_run = logical_merge(merge_slice, scratch, left, prev_run, is_less);
                 stack_len -= 1;
             }
 

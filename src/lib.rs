@@ -1,14 +1,14 @@
 #![feature(ptr_sub_ptr, maybe_uninit_slice)]
 
-const SMALL_SORT_THRESH: usize = 32;
-
-use std::cmp::Ordering;
-use std::mem::MaybeUninit;
+use core::cmp::{self, Ordering};
+use core::mem::MaybeUninit;
 
 mod drift;
 mod merge;
 mod quicksort;
 mod smallsort;
+
+const FALLBACK_RUN_LEN: usize = 10;
 
 /// Compactly stores the length of a run, and whether or not it is sorted. This
 /// can always fit in a usize because the maximum slice length is isize::MAX.
@@ -53,13 +53,16 @@ fn driftsort<T, F: FnMut(&T, &T) -> bool>(v: &mut [T], mut is_less: F) {
         return;
     }
 
+    // TODO insertion sort for small slices.
+
     slow_path_sort(v, &mut is_less);
 }
 
 #[inline(never)]
 #[cold]
 fn slow_path_sort<T, F: FnMut(&T, &T) -> bool>(v: &mut [T], is_less: &mut F) {
-    let alloc_size = SMALL_SORT_THRESH.max(v.len() / 2);
+    let alloc_size = cmp::max(v.len() / 2, 64); // TODO use const from quicksort. Or just N.
+
     let mut scratch: Vec<T> = Vec::with_capacity(alloc_size);
     let scratch_slice = unsafe {
         std::slice::from_raw_parts_mut(
@@ -67,6 +70,7 @@ fn slow_path_sort<T, F: FnMut(&T, &T) -> bool>(v: &mut [T], is_less: &mut F) {
             scratch.capacity(),
         )
     };
+
     drift::sort(v, scratch_slice, false, is_less);
 }
 
@@ -92,20 +96,76 @@ fn stable_quicksort<T, F: FnMut(&T, &T) -> bool>(
     crate::quicksort::stable_quicksort(v, scratch, limit, is_less);
 }
 
-#[inline(never)]
+/// Create a new logical run, that is either sorted or unsorted.
 fn create_run<T, F: FnMut(&T, &T) -> bool>(
     v: &mut [T],
+    mut min_good_run_len: usize,
     eager_sort: bool,
     is_less: &mut F,
 ) -> LengthAndSorted {
     // FIXME: run detection.
 
-    // TODO: unlikely?
+    let len = v.len();
+
+    let (streak_end, was_reversed) = find_streak(v, is_less);
+
     if eager_sort {
-        let len = v.len().min(32);
-        smallsort::sort_small(&mut v[..len], is_less);
-        LengthAndSorted::new_sorted(len)
+        min_good_run_len = FALLBACK_RUN_LEN;
+    }
+
+    if streak_end >= min_good_run_len {
+        if was_reversed {
+            v[..streak_end].reverse();
+        }
+
+        LengthAndSorted::new_sorted(streak_end)
     } else {
-        LengthAndSorted::new_unsorted(v.len().min(32))
+        if !eager_sort {
+            LengthAndSorted::new_unsorted(cmp::min(min_good_run_len, len))
+        } else {
+            // We are not allowed to generate unsorted sequences in this mode. This mode is used as
+            // fallback algorithm for quicksort. Essentially falling back to merge sort.
+            let run_end = cmp::min(FALLBACK_RUN_LEN, len);
+            let run_len = len - run_end;
+            smallsort::sort_small(&mut v[..run_end], is_less);
+            LengthAndSorted::new_sorted(run_len)
+        }
+    }
+}
+
+/// Finds a streak of presorted elements starting at the beginning of the slice. Returns the first
+/// value that is not part of said streak, and a bool denoting wether the streak was reversed.
+/// Streaks can be increasing or decreasing.
+fn find_streak<T, F>(v: &[T], is_less: &mut F) -> (usize, bool)
+where
+    F: FnMut(&T, &T) -> bool,
+{
+    let len = v.len();
+
+    if len < 2 {
+        return (len, false);
+    }
+
+    let mut end = 2;
+
+    // SAFETY: See below specific.
+    unsafe {
+        // SAFETY: We checked that len >= 2, so 0 and 1 are valid indices.
+        let assume_reverse = is_less(v.get_unchecked(1), v.get_unchecked(0));
+
+        // SAFETY: We know end >= 2 and check end < len.
+        // From that follows that accessing v at end and end - 1 is safe.
+        if assume_reverse {
+            while end < len && is_less(v.get_unchecked(end), v.get_unchecked(end - 1)) {
+                end += 1;
+            }
+
+            (end, true)
+        } else {
+            while end < len && !is_less(v.get_unchecked(end), v.get_unchecked(end - 1)) {
+                end += 1;
+            }
+            (end, false)
+        }
     }
 }
