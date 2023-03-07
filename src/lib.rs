@@ -7,6 +7,7 @@ use std::mem::MaybeUninit;
 
 mod drift;
 mod quicksort;
+mod smallsort;
 
 /// Compactly stores the length of a run, and whether or not it is sorted. This
 /// can always fit in a usize because the maximum slice length is isize::MAX.
