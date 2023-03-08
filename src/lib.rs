@@ -126,9 +126,9 @@ fn create_run<T, F: FnMut(&T, &T) -> bool>(
             // We are not allowed to generate unsorted sequences in this mode. This mode is used as
             // fallback algorithm for quicksort. Essentially falling back to merge sort.
             let run_end = cmp::min(FALLBACK_RUN_LEN, len);
-            let run_len = len - run_end;
             smallsort::sort_small(&mut v[..run_end], is_less);
-            LengthAndSorted::new_sorted(run_len)
+
+            LengthAndSorted::new_sorted(run_end)
         }
     }
 }
