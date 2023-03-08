@@ -14,6 +14,7 @@ fn logical_merge<T, F: FnMut(&T, &T) -> bool>(
     scratch: &mut [MaybeUninit<T>],
     left: LengthAndSorted,
     right: LengthAndSorted,
+    orig_array_len: usize,
     is_less: &mut F,
 ) -> LengthAndSorted {
     // We *need* to physically merge if the combined runs do not fit in the
@@ -29,10 +30,12 @@ fn logical_merge<T, F: FnMut(&T, &T) -> bool>(
     // forget the run is sorted and treat it as unsorted data.
     let len = v.len();
 
-    let can_fit_in_scratch = len <= scratch.len();
-    let should_physical_merge = left.sorted() || right.sorted();
+    let doesnt_fit_in_scratch = len > scratch.len();
+    let num_sorted_plus_significance = (len.saturating_mul(len) >= orig_array_len) as usize
+        + (left.sorted() as usize)
+        + (right.sorted() as usize);
 
-    if !can_fit_in_scratch || should_physical_merge {
+    if doesnt_fit_in_scratch || num_sorted_plus_significance >= 2 {
         if !left.sorted() {
             crate::stable_quicksort(&mut v[..left.len()], scratch, is_less);
         }
@@ -114,7 +117,9 @@ pub fn sort<T, F: FnMut(&T, &T) -> bool>(
 
     let scale_factor = merge_tree_scale_factor(len);
 
-    let min_good_run_len = cmp::max((len as f64).sqrt().round() as usize, MIN_MERGE_SLICE_LEN);
+    let min_good_run_len = MIN_MERGE_SLICE_LEN;
+    // TODO
+    // let min_good_run_len = cmp::max((len as f64).sqrt().round() as usize, MIN_MERGE_SLICE_LEN);
 
     // (stack_len, runs, desired_depths) together form a stack maintaining run
     // information for the powersort heuristic. desired_depths[i] is the desired
@@ -163,7 +168,7 @@ pub fn sort<T, F: FnMut(&T, &T) -> bool>(
                 let merged_len = left.len() + prev_run.len();
                 let merge_start_idx = scan_idx - merged_len;
                 let merge_slice = v.get_unchecked_mut(merge_start_idx..scan_idx);
-                prev_run = logical_merge(merge_slice, scratch, left, prev_run, is_less);
+                prev_run = logical_merge(merge_slice, scratch, left, prev_run, len, is_less);
                 stack_len -= 1;
             }
 
