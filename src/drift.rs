@@ -1,4 +1,3 @@
-use core::cmp;
 use core::mem::MaybeUninit;
 
 use crate::LengthAndSorted;
@@ -43,9 +42,7 @@ fn logical_merge<T, F: FnMut(&T, &T) -> bool>(
             crate::stable_quicksort(&mut v[left.len()..], scratch, is_less);
         }
 
-        if cmp::min(left.len(), right.len()) > 0 {
-            crate::physical_merge(v, scratch, left.len(), is_less);
-        }
+        crate::physical_merge(v, scratch, left.len(), is_less);
 
         LengthAndSorted::new_sorted(len)
     } else {
