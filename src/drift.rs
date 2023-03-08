@@ -114,8 +114,7 @@ pub fn sort<T, F: FnMut(&T, &T) -> bool>(
 
     let scale_factor = merge_tree_scale_factor(len);
 
-    // Approx sqrt(len)
-    let min_good_run_len = cmp::max(len.ilog2() as usize, MIN_MERGE_SLICE_LEN);
+    let min_good_run_len = cmp::max((len as f64).sqrt().round() as usize, MIN_MERGE_SLICE_LEN);
 
     // (stack_len, runs, desired_depths) together form a stack maintaining run
     // information for the powersort heuristic. desired_depths[i] is the desired
