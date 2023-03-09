@@ -1,10 +1,7 @@
+use core::cmp;
 use core::mem::MaybeUninit;
 
 use crate::LengthAndSorted;
-
-// What's the smallest possible sub-slice that is considered a already sorted run and used for
-// merging.
-const MIN_MERGE_SLICE_LEN: usize = 32;
 
 // Lazy logical runs as in Glidesort.
 #[inline(always)]
@@ -13,28 +10,18 @@ fn logical_merge<T, F: FnMut(&T, &T) -> bool>(
     scratch: &mut [MaybeUninit<T>],
     left: LengthAndSorted,
     right: LengthAndSorted,
-    orig_array_len: usize,
     is_less: &mut F,
 ) -> LengthAndSorted {
-    // We *need* to physically merge if the combined runs do not fit in the
-    // scratch space anymore (as this would mean we are no longer able to
-    // to quicksort them).
-    //
-    // If both our inputs are sorted, it makes sense to merge them.
-    //
-    // Finally, if only one of our inputs is sorted we quicksort the other one
-    // and merge iff the combined length is significant enough to be worth
-    // it to switch to merges. We consider it significant if the combined
-    // length is at least sqrt of the original array length. Otherwise we simply
-    // forget the run is sorted and treat it as unsorted data.
+    // If one or both of the runs are sorted do a physical merge. Using quicksort to sort the
+    // unsorted run if present.
+
     let len = v.len();
 
-    let doesnt_fit_in_scratch = len > scratch.len();
-    let num_sorted_plus_significance = (len.saturating_mul(len) >= orig_array_len) as usize
-        + (left.sorted() as usize)
-        + (right.sorted() as usize);
+    // We *need* to physically merge if the combined runs do not fit in the scratch space anymore
+    // (as this would mean we are no longer able to to quicksort them).
+    let can_fit_in_scratch = len <= scratch.len();
 
-    if doesnt_fit_in_scratch || num_sorted_plus_significance >= 2 {
+    if !can_fit_in_scratch || left.sorted() || right.sorted() {
         if !left.sorted() {
             crate::stable_quicksort(&mut v[..left.len()], scratch, is_less);
         }
@@ -101,12 +88,45 @@ fn merge_tree_depth(left: usize, mid: usize, right: usize, scale_factor: u64) ->
     ((scale_factor * x) ^ (scale_factor * y)).leading_zeros() as u8
 }
 
+// Based on this https://stackoverflow.com/a/63452286
+fn isqrt(val: u64) -> u64 {
+    assert!(val != 0);
+
+    fn bit_width(val: u64) -> u64 {
+        64 - (val.leading_zeros() as u64)
+    }
+
+    let mut shift = bit_width(val);
+    shift += shift & 1; // round up to next multiple of 2
+
+    let mut result: u64 = 0;
+
+    // The loop will iterate at most ceil(bit_width / 2) times.
+    loop {
+        shift -= 2;
+        result = result.wrapping_shl(1); // leftshift the result to make the next guess
+        result |= 1; // guess that the next bit is 1
+
+        // revert if guess too high
+        result ^= (result.saturating_mul(result) > (val.wrapping_shr(shift as u32))) as u64;
+
+        if shift == 0 {
+            break;
+        }
+    }
+
+    result
+}
 pub fn sort<T, F: FnMut(&T, &T) -> bool>(
     v: &mut [T],
     scratch: &mut [MaybeUninit<T>],
     eager_sort: bool,
     is_less: &mut F,
 ) {
+    // What's the smallest possible sub-slice that is considered a already sorted run and used for
+    // merging.
+    const MIN_MERGE_SLICE_LEN: usize = 16;
+
     let len = v.len();
     if len < 2 {
         return; // Removing this length check *increases* code size.
@@ -114,9 +134,7 @@ pub fn sort<T, F: FnMut(&T, &T) -> bool>(
 
     let scale_factor = merge_tree_scale_factor(len);
 
-    let min_good_run_len = MIN_MERGE_SLICE_LEN;
-    // TODO
-    // let min_good_run_len = cmp::max((len as f64).sqrt().round() as usize, MIN_MERGE_SLICE_LEN);
+    let min_good_run_len = cmp::max(isqrt(len as u64) as usize, MIN_MERGE_SLICE_LEN);
 
     // (stack_len, runs, desired_depths) together form a stack maintaining run
     // information for the powersort heuristic. desired_depths[i] is the desired
@@ -165,7 +183,7 @@ pub fn sort<T, F: FnMut(&T, &T) -> bool>(
                 let merged_len = left.len() + prev_run.len();
                 let merge_start_idx = scan_idx - merged_len;
                 let merge_slice = v.get_unchecked_mut(merge_start_idx..scan_idx);
-                prev_run = logical_merge(merge_slice, scratch, left, prev_run, len, is_less);
+                prev_run = logical_merge(merge_slice, scratch, left, prev_run, is_less);
                 stack_len -= 1;
             }
 

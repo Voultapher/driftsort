@@ -113,6 +113,9 @@ fn create_run<T, F: FnMut(&T, &T) -> bool>(
         min_good_run_len = FALLBACK_RUN_LEN;
     }
 
+    // It's important to have a relatively high entry barrier for pre-sorted runs, as the presence
+    // of a single such run will force on average several merge operations and shrink the max
+    // quicksort size a lot. Which impact low-cardinality filtering performance.
     if streak_end >= min_good_run_len {
         if was_reversed {
             v[..streak_end].reverse();
@@ -121,6 +124,10 @@ fn create_run<T, F: FnMut(&T, &T) -> bool>(
         LengthAndSorted::new_sorted(streak_end)
     } else {
         if !eager_sort {
+            // min_good_run_len serves dual duty here, if no streak was found, create a relatively
+            // large unsorted run to avoid calling find_streak all the time. This also puts a limit
+            // on how many logical merges have to be done, but this plays a minor role performance
+            // wise.
             LengthAndSorted::new_unsorted(cmp::min(min_good_run_len, len))
         } else {
             // We are not allowed to generate unsorted sequences in this mode. This mode is used as
