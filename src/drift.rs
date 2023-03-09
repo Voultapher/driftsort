@@ -1,17 +1,17 @@
 use core::cmp;
 use core::mem::MaybeUninit;
 
-use crate::LengthAndSorted;
+use crate::DriftsortRun;
 
 // Lazy logical runs as in Glidesort.
 #[inline(always)]
 fn logical_merge<T, F: FnMut(&T, &T) -> bool>(
     v: &mut [T],
     scratch: &mut [MaybeUninit<T>],
-    left: LengthAndSorted,
-    right: LengthAndSorted,
+    left: DriftsortRun,
+    right: DriftsortRun,
     is_less: &mut F,
-) -> LengthAndSorted {
+) -> DriftsortRun {
     // If one or both of the runs are sorted do a physical merge. Using quicksort to sort the
     // unsorted run if present.
 
@@ -31,9 +31,9 @@ fn logical_merge<T, F: FnMut(&T, &T) -> bool>(
 
         crate::physical_merge(v, scratch, left.len(), is_less);
 
-        LengthAndSorted::new_sorted(len)
+        DriftsortRun::new_sorted(len)
     } else {
-        LengthAndSorted::new_unsorted(len)
+        DriftsortRun::new_unsorted(len)
     }
 }
 
@@ -117,6 +117,7 @@ fn isqrt(val: u64) -> u64 {
 
     result
 }
+
 pub fn sort<T, F: FnMut(&T, &T) -> bool>(
     v: &mut [T],
     scratch: &mut [MaybeUninit<T>],
@@ -141,13 +142,13 @@ pub fn sort<T, F: FnMut(&T, &T) -> bool>(
     // depth of the merge node that merges runs[i] with the run that comes after
     // it.
     let mut stack_len = 0;
-    let mut run_storage = MaybeUninit::<[LengthAndSorted; 66]>::uninit();
-    let runs: *mut LengthAndSorted = run_storage.as_mut_ptr().cast();
+    let mut run_storage = MaybeUninit::<[DriftsortRun; 66]>::uninit();
+    let runs: *mut DriftsortRun = run_storage.as_mut_ptr().cast();
     let mut desired_depth_storage = MaybeUninit::<[u8; 66]>::uninit();
     let desired_depths: *mut u8 = desired_depth_storage.as_mut_ptr().cast();
 
     let mut scan_idx = 0;
-    let mut prev_run = LengthAndSorted::new_sorted(0); // Initial dummy run.
+    let mut prev_run = DriftsortRun::new_sorted(0); // Initial dummy run.
     loop {
         // Compute the next run and the desired depth of the merge node between
         // prev_run and next_run. On the last iteration we create a dummy run
@@ -162,7 +163,7 @@ pub fn sort<T, F: FnMut(&T, &T) -> bool>(
                 scale_factor,
             );
         } else {
-            next_run = LengthAndSorted::new_sorted(0);
+            next_run = DriftsortRun::new_sorted(0);
             desired_depth = 0;
         };
 
