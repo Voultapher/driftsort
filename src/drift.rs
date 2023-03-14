@@ -1,40 +1,27 @@
+use core::cmp;
 use core::mem::MaybeUninit;
 
-use crate::LengthAndSorted;
-
-// What's the smallest possible sub-slice that is considered a already sorted run and used for
-// merging.
-const MIN_MERGE_SLICE_LEN: usize = 32;
+use crate::DriftsortRun;
 
 // Lazy logical runs as in Glidesort.
 #[inline(always)]
 fn logical_merge<T, F: FnMut(&T, &T) -> bool>(
     v: &mut [T],
     scratch: &mut [MaybeUninit<T>],
-    left: LengthAndSorted,
-    right: LengthAndSorted,
-    orig_array_len: usize,
+    left: DriftsortRun,
+    right: DriftsortRun,
     is_less: &mut F,
-) -> LengthAndSorted {
-    // We *need* to physically merge if the combined runs do not fit in the
-    // scratch space anymore (as this would mean we are no longer able to
-    // to quicksort them).
-    //
-    // If both our inputs are sorted, it makes sense to merge them.
-    //
-    // Finally, if only one of our inputs is sorted we quicksort the other one
-    // and merge iff the combined length is significant enough to be worth
-    // it to switch to merges. We consider it significant if the combined
-    // length is at least sqrt of the original array length. Otherwise we simply
-    // forget the run is sorted and treat it as unsorted data.
+) -> DriftsortRun {
+    // If one or both of the runs are sorted do a physical merge. Using quicksort to sort the
+    // unsorted run if present.
+
     let len = v.len();
 
-    let doesnt_fit_in_scratch = len > scratch.len();
-    let num_sorted_plus_significance = (len.saturating_mul(len) >= orig_array_len) as usize
-        + (left.sorted() as usize)
-        + (right.sorted() as usize);
+    // We *need* to physically merge if the combined runs do not fit in the scratch space anymore
+    // (as this would mean we are no longer able to to quicksort them).
+    let can_fit_in_scratch = len <= scratch.len();
 
-    if doesnt_fit_in_scratch || num_sorted_plus_significance >= 2 {
+    if !can_fit_in_scratch || left.sorted() || right.sorted() {
         if !left.sorted() {
             crate::stable_quicksort(&mut v[..left.len()], scratch, is_less);
         }
@@ -44,9 +31,9 @@ fn logical_merge<T, F: FnMut(&T, &T) -> bool>(
 
         crate::physical_merge(v, scratch, left.len(), is_less);
 
-        LengthAndSorted::new_sorted(len)
+        DriftsortRun::new_sorted(len)
     } else {
-        LengthAndSorted::new_unsorted(len)
+        DriftsortRun::new_unsorted(len)
     }
 }
 
@@ -101,12 +88,35 @@ fn merge_tree_depth(left: usize, mid: usize, right: usize, scale_factor: u64) ->
     ((scale_factor * x) ^ (scale_factor * y)).leading_zeros() as u8
 }
 
+fn sqrt_approx(n: usize) -> usize {
+    // Single round of newtons method, should compile to bit shifts not divisions:
+    // https://rust.godbolt.org/z/bYhzah9ff
+    //
+    // Note that sqrt(n) = n^(1/2), and that 2^log2(n) = n. We combine these
+    // two facts to approximate sqrt(n) as 2^(log2(n) / 2). Because our integer
+    // log floors we want to add 0.5 to compensate for this on average, so our
+    // initial approximation is 2^((1 + floor(log2(n))) / 2).
+    //
+    // We then apply an iteration of Newton's method to improve our
+    // approximation, which for sqrt(n) is a1 = (a0 + n / a0) / 2.
+    //
+    // Finally we note that the exponentiation / division can be done directly
+    // with shifts. We OR with 1 to avoid zero-checks in the integer log.
+    let ilog = (n | 1).ilog2();
+    let shift = (1 + ilog) / 2;
+    ((1 << shift) + (n >> shift)) / 2
+}
+
 pub fn sort<T, F: FnMut(&T, &T) -> bool>(
     v: &mut [T],
     scratch: &mut [MaybeUninit<T>],
     eager_sort: bool,
     is_less: &mut F,
 ) {
+    // What's the smallest possible sub-slice that is considered a already sorted run and used for
+    // merging.
+    const MIN_MERGE_SLICE_LEN: usize = 16;
+
     let len = v.len();
     if len < 2 {
         return; // Removing this length check *increases* code size.
@@ -114,22 +124,20 @@ pub fn sort<T, F: FnMut(&T, &T) -> bool>(
 
     let scale_factor = merge_tree_scale_factor(len);
 
-    let min_good_run_len = MIN_MERGE_SLICE_LEN;
-    // TODO
-    // let min_good_run_len = cmp::max((len as f64).sqrt().round() as usize, MIN_MERGE_SLICE_LEN);
+    let min_good_run_len = cmp::max(sqrt_approx(len), MIN_MERGE_SLICE_LEN);
 
     // (stack_len, runs, desired_depths) together form a stack maintaining run
     // information for the powersort heuristic. desired_depths[i] is the desired
     // depth of the merge node that merges runs[i] with the run that comes after
     // it.
     let mut stack_len = 0;
-    let mut run_storage = MaybeUninit::<[LengthAndSorted; 66]>::uninit();
-    let runs: *mut LengthAndSorted = run_storage.as_mut_ptr().cast();
+    let mut run_storage = MaybeUninit::<[DriftsortRun; 66]>::uninit();
+    let runs: *mut DriftsortRun = run_storage.as_mut_ptr().cast();
     let mut desired_depth_storage = MaybeUninit::<[u8; 66]>::uninit();
     let desired_depths: *mut u8 = desired_depth_storage.as_mut_ptr().cast();
 
     let mut scan_idx = 0;
-    let mut prev_run = LengthAndSorted::new_sorted(0); // Initial dummy run.
+    let mut prev_run = DriftsortRun::new_sorted(0); // Initial dummy run.
     loop {
         // Compute the next run and the desired depth of the merge node between
         // prev_run and next_run. On the last iteration we create a dummy run
@@ -144,7 +152,7 @@ pub fn sort<T, F: FnMut(&T, &T) -> bool>(
                 scale_factor,
             );
         } else {
-            next_run = LengthAndSorted::new_sorted(0);
+            next_run = DriftsortRun::new_sorted(0);
             desired_depth = 0;
         };
 
@@ -165,7 +173,7 @@ pub fn sort<T, F: FnMut(&T, &T) -> bool>(
                 let merged_len = left.len() + prev_run.len();
                 let merge_start_idx = scan_idx - merged_len;
                 let merge_slice = v.get_unchecked_mut(merge_start_idx..scan_idx);
-                prev_run = logical_merge(merge_slice, scratch, left, prev_run, len, is_less);
+                prev_run = logical_merge(merge_slice, scratch, left, prev_run, is_less);
                 stack_len -= 1;
             }
 

@@ -13,9 +13,9 @@ const FALLBACK_RUN_LEN: usize = 10;
 /// Compactly stores the length of a run, and whether or not it is sorted. This
 /// can always fit in a usize because the maximum slice length is isize::MAX.
 #[derive(Copy, Clone)]
-struct LengthAndSorted(usize);
+struct DriftsortRun(usize);
 
-impl LengthAndSorted {
+impl DriftsortRun {
     #[inline(always)]
     pub fn new_sorted(length: usize) -> Self {
         Self((length << 1) | 1)
@@ -102,7 +102,7 @@ fn create_run<T, F: FnMut(&T, &T) -> bool>(
     mut min_good_run_len: usize,
     eager_sort: bool,
     is_less: &mut F,
-) -> LengthAndSorted {
+) -> DriftsortRun {
     // FIXME: run detection.
 
     let len = v.len();
@@ -113,22 +113,29 @@ fn create_run<T, F: FnMut(&T, &T) -> bool>(
         min_good_run_len = FALLBACK_RUN_LEN;
     }
 
+    // It's important to have a relatively high entry barrier for pre-sorted runs, as the presence
+    // of a single such run will force on average several merge operations and shrink the max
+    // quicksort size a lot. Which impact low-cardinality filtering performance.
     if streak_end >= min_good_run_len {
         if was_reversed {
             v[..streak_end].reverse();
         }
 
-        LengthAndSorted::new_sorted(streak_end)
+        DriftsortRun::new_sorted(streak_end)
     } else {
         if !eager_sort {
-            LengthAndSorted::new_unsorted(cmp::min(min_good_run_len, len))
+            // min_good_run_len serves dual duty here, if no streak was found, create a relatively
+            // large unsorted run to avoid calling find_streak all the time. This also puts a limit
+            // on how many logical merges have to be done, but this plays a minor role performance
+            // wise.
+            DriftsortRun::new_unsorted(cmp::min(min_good_run_len, len))
         } else {
             // We are not allowed to generate unsorted sequences in this mode. This mode is used as
             // fallback algorithm for quicksort. Essentially falling back to merge sort.
             let run_end = cmp::min(FALLBACK_RUN_LEN, len);
             smallsort::sort_small(&mut v[..run_end], is_less);
 
-            LengthAndSorted::new_sorted(run_end)
+            DriftsortRun::new_sorted(run_end)
         }
     }
 }
