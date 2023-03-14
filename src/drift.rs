@@ -88,34 +88,23 @@ fn merge_tree_depth(left: usize, mid: usize, right: usize, scale_factor: u64) ->
     ((scale_factor * x) ^ (scale_factor * y)).leading_zeros() as u8
 }
 
-// Based on this https://stackoverflow.com/a/63452286
-fn isqrt(val: u64) -> u64 {
-    assert!(val != 0);
-
-    fn bit_width(val: u64) -> u64 {
-        64 - (val.leading_zeros() as u64)
-    }
-
-    let mut shift = bit_width(val);
-    shift += shift & 1; // round up to next multiple of 2
-
-    let mut result: u64 = 0;
-
-    // The loop will iterate at most ceil(bit_width / 2) times.
-    loop {
-        shift -= 2;
-        result = result.wrapping_shl(1); // leftshift the result to make the next guess
-        result |= 1; // guess that the next bit is 1
-
-        // revert if guess too high
-        result ^= (result.saturating_mul(result) > (val.wrapping_shr(shift as u32))) as u64;
-
-        if shift == 0 {
-            break;
-        }
-    }
-
-    result
+fn sqrt_approx(n: usize) -> usize {
+    // Single round of newtons method, should compile to bit shifts not divisions:
+    // https://rust.godbolt.org/z/bYhzah9ff
+    //
+    // Note that sqrt(n) = n^(1/2), and that 2^log2(n) = n. We combine these
+    // two facts to approximate sqrt(n) as 2^(log2(n) / 2). Because our integer
+    // log floors we want to add 0.5 to compensate for this on average, so our
+    // initial approximation is 2^((1 + floor(log2(n))) / 2).
+    //
+    // We then apply an iteration of Newton's method to improve our
+    // approximation, which for sqrt(n) is a1 = (a0 + n / a0) / 2.
+    //
+    // Finally we note that the exponentiation / division can be done directly
+    // with shifts. We OR with 1 to avoid zero-checks in the integer log.
+    let ilog = (n | 1).ilog2();
+    let shift = (1 + ilog) / 2;
+    ((1 << shift) + (n >> shift)) / 2
 }
 
 pub fn sort<T, F: FnMut(&T, &T) -> bool>(
@@ -135,7 +124,7 @@ pub fn sort<T, F: FnMut(&T, &T) -> bool>(
 
     let scale_factor = merge_tree_scale_factor(len);
 
-    let min_good_run_len = cmp::max(isqrt(len as u64) as usize, MIN_MERGE_SLICE_LEN);
+    let min_good_run_len = cmp::max(sqrt_approx(len), MIN_MERGE_SLICE_LEN);
 
     // (stack_len, runs, desired_depths) together form a stack maintaining run
     // information for the powersort heuristic. desired_depths[i] is the desired
