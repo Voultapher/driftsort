@@ -6,10 +6,12 @@
     negative_impls,
     specialization,
     const_trait_impl,
-    inline_const
+    inline_const,
+    core_intrinsics
 )]
 
 use core::cmp::{self, Ordering};
+use core::intrinsics;
 use core::mem::{self, MaybeUninit};
 use core::slice;
 
@@ -59,17 +61,43 @@ pub fn sort_by<T, F: FnMut(&T, &T) -> Ordering>(v: &mut [T], mut compare: F) {
 
 #[inline(always)]
 fn driftsort<T, F: FnMut(&T, &T) -> bool>(v: &mut [T], mut is_less: F) {
-    if v.len() < 2 || mem::size_of::<T>() == 0 {
+    // Sorting has no meaningful behavior on zero-sized types.
+    if const { mem::size_of::<T>() == 0 } {
         return;
     }
 
-    // TODO insertion sort for small slices.
+    let len = v.len();
+
+    // This path is critical for very small inputs. Always pick insertion sort for these inputs,
+    // without any other analysis. This is perf critical for small inputs, in cold code.
+    const MAX_LEN_ALWAYS_INSERTION_SORT: usize = 20;
+
+    // Instrumenting the standard library showed that 90+% of the calls to sort by rustc are either
+    // of size 0 or 1. Make this path extra fast by assuming the branch is likely.
+    if intrinsics::likely(len < 2) {
+        return;
+    }
+
+    // It's important to differentiate between small-sort performance for small slices and
+    // small-sort performance sorting small sub-slices as part of the main quicksort loop. For the
+    // former, testing showed that the representative benchmarks for real-world performance are cold
+    // CPU state and not single-size hot benchmarks. For the latter the CPU will call them many
+    // times, so hot benchmarks are fine and more realistic. And it's worth it to optimize sorting
+    // small sub-slices with more sophisticated solutions than insertion sort.
+
+    if intrinsics::likely(len <= MAX_LEN_ALWAYS_INSERTION_SORT) {
+        // More specialized and faster options, extending the range of allocation free sorting
+        // are possible but come at a great cost of additional code, which is problematic for
+        // compile-times.
+        smallsort::insertion_sort_shift_left(v, 1, &mut is_less);
+
+        return;
+    }
 
     slow_path_sort(v, &mut is_less);
 }
 
 #[inline(never)]
-#[cold]
 fn slow_path_sort<T, F: FnMut(&T, &T) -> bool>(v: &mut [T], is_less: &mut F) {
     // Allocating len instead of len / 2 allows the quicksort to work on the full size, which can
     // give speedups especially for low cardinality inputs where common values are filtered out only

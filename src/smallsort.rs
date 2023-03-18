@@ -82,7 +82,7 @@ where
 }
 
 /// Sort `v` assuming `v[..offset]` is already sorted.
-fn insertion_sort_shift_left<T, F>(v: &mut [T], offset: usize, is_less: &mut F)
+pub fn insertion_sort_shift_left<T, F>(v: &mut [T], offset: usize, is_less: &mut F)
 where
     F: FnMut(&T, &T) -> bool,
 {
