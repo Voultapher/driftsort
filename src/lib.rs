@@ -10,7 +10,8 @@
 )]
 
 use core::cmp::{self, Ordering};
-use core::mem::MaybeUninit;
+use core::mem::{self, MaybeUninit};
+use core::slice;
 
 mod drift;
 mod merge;
@@ -58,7 +59,7 @@ pub fn sort_by<T, F: FnMut(&T, &T) -> Ordering>(v: &mut [T], mut compare: F) {
 
 #[inline(always)]
 fn driftsort<T, F: FnMut(&T, &T) -> bool>(v: &mut [T], mut is_less: F) {
-    if v.len() < 2 || std::mem::size_of::<T>() == 0 {
+    if v.len() < 2 || mem::size_of::<T>() == 0 {
         return;
     }
 
@@ -70,11 +71,24 @@ fn driftsort<T, F: FnMut(&T, &T) -> bool>(v: &mut [T], mut is_less: F) {
 #[inline(never)]
 #[cold]
 fn slow_path_sort<T, F: FnMut(&T, &T) -> bool>(v: &mut [T], is_less: &mut F) {
-    let alloc_size = cmp::max(v.len() / 2, 64); // TODO use const from quicksort. Or just N.
+    // Allocating len instead of len / 2 allows the quicksort to work on the full size, which can
+    // give speedups especially for low cardinality inputs where common values are filtered out only
+    // once, instead of twice. And it allows bi-directional merging the full input. However to
+    // reduce peak memory usage for large inputs, fall back to allocating len / 2 if a certain
+    // threshold is passed.
+    const MAX_FULL_ALLOC_BYTES: usize = 8_000_000; // 8MB
+
+    let len = v.len();
+
+    let alloc_size = if mem::size_of::<T>() * len <= MAX_FULL_ALLOC_BYTES {
+        len
+    } else {
+        len / 2
+    };
 
     let mut scratch: Vec<T> = Vec::with_capacity(alloc_size);
     let scratch_slice = unsafe {
-        std::slice::from_raw_parts_mut(
+        slice::from_raw_parts_mut(
             scratch.as_mut_ptr().cast::<MaybeUninit<T>>(),
             scratch.capacity(),
         )
