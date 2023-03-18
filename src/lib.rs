@@ -7,12 +7,13 @@
     specialization,
     const_trait_impl,
     inline_const,
-    core_intrinsics
+    core_intrinsics,
+    sized_type_properties
 )]
 
 use core::cmp::{self, Ordering};
 use core::intrinsics;
-use core::mem::{self, MaybeUninit};
+use core::mem::{self, MaybeUninit, SizedTypeProperties};
 use core::slice;
 
 mod drift;
@@ -51,18 +52,27 @@ impl DriftsortRun {
 
 #[inline(always)]
 pub fn sort<T: Ord>(v: &mut [T]) {
-    driftsort(v, |a, b| a.lt(b))
+    stable_sort(v, |a, b| a.lt(b))
 }
 
 #[inline(always)]
 pub fn sort_by<T, F: FnMut(&T, &T) -> Ordering>(v: &mut [T], mut compare: F) {
-    driftsort(v, |a, b| compare(a, b) == Ordering::Less);
+    stable_sort(v, |a, b| compare(a, b) == Ordering::Less);
 }
 
 #[inline(always)]
-fn driftsort<T, F: FnMut(&T, &T) -> bool>(v: &mut [T], mut is_less: F) {
+fn stable_sort<T, F: FnMut(&T, &T) -> bool>(v: &mut [T], mut is_less: F) {
+    driftsort::<T, F, Vec<T>>(v, &mut is_less);
+}
+
+#[inline(always)]
+fn driftsort<T, F, BufT>(v: &mut [T], is_less: &mut F)
+where
+    F: FnMut(&T, &T) -> bool,
+    BufT: BufGuard<T>,
+{
     // Sorting has no meaningful behavior on zero-sized types.
-    if const { mem::size_of::<T>() == 0 } {
+    if T::IS_ZST {
         return;
     }
 
@@ -89,16 +99,20 @@ fn driftsort<T, F: FnMut(&T, &T) -> bool>(v: &mut [T], mut is_less: F) {
         // More specialized and faster options, extending the range of allocation free sorting
         // are possible but come at a great cost of additional code, which is problematic for
         // compile-times.
-        smallsort::insertion_sort_shift_left(v, 1, &mut is_less);
+        smallsort::insertion_sort_shift_left(v, 1, is_less);
 
         return;
     }
 
-    slow_path_sort(v, &mut is_less);
+    driftsort_main::<T, F, BufT>(v, is_less);
 }
 
 #[inline(never)]
-fn slow_path_sort<T, F: FnMut(&T, &T) -> bool>(v: &mut [T], is_less: &mut F) {
+fn driftsort_main<T, F, BufT>(v: &mut [T], is_less: &mut F)
+where
+    F: FnMut(&T, &T) -> bool,
+    BufT: BufGuard<T>,
+{
     // Allocating len instead of len / 2 allows the quicksort to work on the full size, which can
     // give speedups especially for low cardinality inputs where common values are filtered out only
     // once, instead of twice. And it allows bi-directional merging the full input. However to
@@ -118,13 +132,10 @@ fn slow_path_sort<T, F: FnMut(&T, &T) -> bool>(v: &mut [T], is_less: &mut F) {
     let full_alloc_size = cmp::min(len, MAX_FULL_ALLOC_BYTES / mem::size_of::<T>());
     let alloc_size = cmp::max(len / 2, full_alloc_size);
 
-    let mut scratch: Vec<T> = Vec::with_capacity(alloc_size);
-    let scratch_slice = unsafe {
-        slice::from_raw_parts_mut(
-            scratch.as_mut_ptr().cast::<MaybeUninit<T>>(),
-            scratch.capacity(),
-        )
-    };
+    let mut buf = <BufT as BufGuard<T>>::with_capacity(alloc_size);
+
+    let scratch_slice =
+        unsafe { slice::from_raw_parts_mut(buf.mut_ptr() as *mut MaybeUninit<T>, buf.capacity()) };
 
     drift::sort(v, scratch_slice, false, is_less);
 }
@@ -229,6 +240,24 @@ where
             }
             (end, false)
         }
+    }
+}
+
+trait BufGuard<T> {
+    fn with_capacity(capacity: usize) -> Self;
+    fn mut_ptr(&mut self) -> *mut T;
+    fn capacity(&self) -> usize;
+}
+
+impl<T> BufGuard<T> for Vec<T> {
+    fn with_capacity(capacity: usize) -> Self {
+        Vec::with_capacity(capacity)
+    }
+    fn mut_ptr(&mut self) -> *mut T {
+        self.as_mut_ptr()
+    }
+    fn capacity(&self) -> usize {
+        self.capacity()
     }
 }
 
