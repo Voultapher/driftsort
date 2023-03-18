@@ -222,8 +222,8 @@ impl<T: Freeze> const IsFreeze for T {
 }
 
 #[must_use]
-const fn has_direct_iterior_mutability<T>() -> bool {
-    // - Can the type have interior mutability, this is checked by testing if T is Copy.
+const fn has_direct_interior_mutability<T>() -> bool {
+    // - Can the type have interior mutability, this is checked by testing if T is Freeze.
     //   If the type can have interior mutability it may alter itself during comparison in a way
     //   that must be observed after the sort operation concludes.
     //   Otherwise a type like Mutex<Option<Box<str>>> could lead to double free.
