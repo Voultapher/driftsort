@@ -1,6 +1,8 @@
 use core::mem::{ManuallyDrop, MaybeUninit};
 use core::ptr;
 
+use crate::has_direct_interior_mutability;
+
 // Switch to a dedicated small array sorting algorithm below this threshold.
 const SMALL_SORT_THRESHOLD: usize = 20;
 
@@ -15,10 +17,17 @@ pub fn stable_quicksort<T, F>(
     mut v: &mut [T],
     scratch: &mut [MaybeUninit<T>],
     mut limit: u32,
+    mut ancestor_pivot: *const T,
     is_less: &mut F,
 ) where
     F: FnMut(&T, &T) -> bool,
 {
+    // To improve filtering out of common values with equal partition, we remember the pivot
+    // ancestor_pivotecessor and use that to compare the next pivot selection. Because we can't move the
+    // relative position of the pivot in a stable sort and subsequent partitioning may change
+    // the position, its easier to simply make a copy of the pivot value and use that for
+    // further comparisons.
+
     loop {
         if v.len() <= SMALL_SORT_THRESHOLD {
             crate::smallsort::sort_small(v, is_less);
@@ -32,19 +41,55 @@ pub fn stable_quicksort<T, F>(
         limit -= 1;
 
         let pivot = choose_pivot(v, is_less);
-        let mid = stable_partition(v, scratch, pivot, is_less, false);
 
-        // Empty left partition almost surely means second time we use this pivot.
-        // Swap to partition that filters equal elements on the left.
-        if mid == 0 {
-            let mid = stable_partition(v, scratch, pivot, &mut |a, b| !is_less(b, a), true);
-            v = &mut v[mid..];
+        let mut should_do_equal_partition = false;
+
+        // If the chosen pivot is equal to the ancestor_pivotecessor, then it's the smallest element in the
+        // slice. Partition the slice into elements equal to and elements greater than the pivot.
+        // This case is usually hit when the slice contains many duplicate elements.
+        if !ancestor_pivot.is_null() {
+            // SAFETY: We checked that ancestor_pivot is not null and choose_pivot must return a valid pivot
+            // pos.
+            should_do_equal_partition =
+                unsafe { !is_less(&*ancestor_pivot, &v.get_unchecked(pivot)) };
+        }
+
+        // SAFETY: See we only use this value for Feeze types, otherwise self-modifications via
+        // `is_less` would not be observed and this would be unsound.
+        //
+        // It's important we do this after we picked the pivot and checked it against the
+        // ancestor_pivotecessor, but before we change v again by partitioning.
+        let pivot_copy = unsafe { ManuallyDrop::new(ptr::read(&v[pivot])) };
+
+        let mut mid = 0;
+
+        if !should_do_equal_partition {
+            mid = stable_partition(v, scratch, pivot, is_less, false);
+
+            // Fallback for non Freeze types.
+            should_do_equal_partition = mid == 0;
+        }
+
+        if should_do_equal_partition {
+            let mid_eq = stable_partition(v, scratch, pivot, &mut |a, b| !is_less(b, a), true);
+            v = &mut v[mid_eq..];
+            ancestor_pivot = ptr::null();
             continue;
         }
 
         let (left, right) = v.split_at_mut(mid);
-        stable_quicksort(left, scratch, limit, is_less);
-        v = right;
+
+        let new_ancestor_pivot = if const { !has_direct_interior_mutability::<T>() } {
+            &pivot_copy as *const ManuallyDrop<T> as *const T
+        } else {
+            ptr::null()
+        };
+
+        // Processing right side with recursion.
+        stable_quicksort(right, scratch, limit, new_ancestor_pivot, is_less);
+
+        // Processing left side with next loop iteration.
+        v = left;
     }
 }
 
@@ -195,7 +240,7 @@ where
         for i in 0..len {
             reverse_out = reverse_out.sub(1);
 
-            // This should only happen once and should be predicted very well. This is required to
+            // This should only happen once and should be ancestor_pivoticted very well. This is required to
             // handle types with interior mutability. See comment above for more info.
             if i == pivot_pos {
                 // We move the pivot in its correct place later.

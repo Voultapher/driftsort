@@ -89,9 +89,6 @@ fn merge_tree_depth(left: usize, mid: usize, right: usize, scale_factor: u64) ->
 }
 
 fn sqrt_approx(n: usize) -> usize {
-    // Single round of newtons method, should compile to bit shifts not divisions:
-    // https://rust.godbolt.org/z/bYhzah9ff
-    //
     // Note that sqrt(n) = n^(1/2), and that 2^log2(n) = n. We combine these
     // two facts to approximate sqrt(n) as 2^(log2(n) / 2). Because our integer
     // log floors we want to add 0.5 to compensate for this on average, so our

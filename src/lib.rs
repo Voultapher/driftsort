@@ -1,7 +1,17 @@
-#![feature(ptr_sub_ptr, maybe_uninit_slice)]
+#![allow(incomplete_features)]
+#![feature(
+    ptr_sub_ptr,
+    maybe_uninit_slice,
+    auto_traits,
+    negative_impls,
+    specialization,
+    const_trait_impl,
+    inline_const
+)]
 
 use core::cmp::{self, Ordering};
 use core::mem::MaybeUninit;
+use core::ptr;
 
 mod drift;
 mod merge;
@@ -93,7 +103,7 @@ fn stable_quicksort<T, F: FnMut(&T, &T) -> bool>(
     // Limit the number of imbalanced partitions to `2 * floor(log2(len))`.
     // The binary OR by one is used to eliminate the zero-check in the logarithm.
     let limit = 2 * (v.len() | 1).ilog2();
-    crate::quicksort::stable_quicksort(v, scratch, limit, is_less);
+    crate::quicksort::stable_quicksort(v, scratch, limit, ptr::null(), is_less);
 }
 
 /// Create a new logical run, that is either sorted or unsorted.
@@ -175,4 +185,47 @@ where
             (end, false)
         }
     }
+}
+
+// --- Type info ---
+
+// Can the type have interior mutability, this is checked by testing if T is Copy. If the type can
+// have interior mutability it may alter itself during comparison in a way that must be observed
+// after the sort operation concludes. Otherwise a type like Mutex<Option<Box<str>>> could lead to
+// double free.
+//
+// Direct copy of stdlib internal implementation of Freeze.
+pub(crate) unsafe auto trait Freeze {}
+
+impl<T: ?Sized> !Freeze for core::cell::UnsafeCell<T> {}
+unsafe impl<T: ?Sized> Freeze for core::marker::PhantomData<T> {}
+unsafe impl<T: ?Sized> Freeze for *const T {}
+unsafe impl<T: ?Sized> Freeze for *mut T {}
+unsafe impl<T: ?Sized> Freeze for &T {}
+unsafe impl<T: ?Sized> Freeze for &mut T {}
+
+#[const_trait]
+trait IsFreeze {
+    fn value() -> bool;
+}
+
+impl<T> const IsFreeze for T {
+    default fn value() -> bool {
+        false
+    }
+}
+
+impl<T: Freeze> const IsFreeze for T {
+    fn value() -> bool {
+        true
+    }
+}
+
+#[must_use]
+const fn has_direct_interior_mutability<T>() -> bool {
+    // - Can the type have interior mutability, this is checked by testing if T is Freeze.
+    //   If the type can have interior mutability it may alter itself during comparison in a way
+    //   that must be observed after the sort operation concludes.
+    //   Otherwise a type like Mutex<Option<Box<str>>> could lead to double free.
+    !<T as IsFreeze>::value()
 }
