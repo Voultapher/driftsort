@@ -11,7 +11,6 @@
 
 use core::cmp::{self, Ordering};
 use core::mem::MaybeUninit;
-use core::ptr;
 
 mod drift;
 mod merge;
@@ -103,7 +102,7 @@ fn stable_quicksort<T, F: FnMut(&T, &T) -> bool>(
     // Limit the number of imbalanced partitions to `2 * floor(log2(len))`.
     // The binary OR by one is used to eliminate the zero-check in the logarithm.
     let limit = 2 * (v.len() | 1).ilog2();
-    crate::quicksort::stable_quicksort(v, scratch, limit, ptr::null(), is_less);
+    crate::quicksort::stable_quicksort(v, scratch, limit, None, is_less);
 }
 
 /// Create a new logical run, that is either sorted or unsorted.

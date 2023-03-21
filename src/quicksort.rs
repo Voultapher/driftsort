@@ -17,7 +17,7 @@ pub fn stable_quicksort<T, F>(
     mut v: &mut [T],
     scratch: &mut [MaybeUninit<T>],
     mut limit: u32,
-    mut ancestor_pivot: *const T,
+    mut ancestor_pivot: Option<&T>,
     is_less: &mut F,
 ) where
     F: FnMut(&T, &T) -> bool,
@@ -47,11 +47,8 @@ pub fn stable_quicksort<T, F>(
         // If the chosen pivot is equal to the ancestor_pivot, then it's the smallest element in the
         // slice. Partition the slice into elements equal to and elements greater than the pivot.
         // This case is usually hit when the slice contains many duplicate elements.
-        if !ancestor_pivot.is_null() {
-            // SAFETY: We checked that ancestor_pivot is not null and choose_pivot must return a valid pivot
-            // pos.
-            should_do_equal_partition =
-                unsafe { !is_less(&*ancestor_pivot, &v.get_unchecked(pivot)) };
+        if let Some(a_pivot) = ancestor_pivot {
+            should_do_equal_partition = !is_less(a_pivot, &v[pivot]);
         }
 
         // SAFETY: See we only use this value for Feeze types, otherwise self-modifications via
@@ -73,16 +70,18 @@ pub fn stable_quicksort<T, F>(
         if should_do_equal_partition {
             let mid_eq = stable_partition(v, scratch, pivot, &mut |a, b| !is_less(b, a), true);
             v = &mut v[mid_eq..];
-            ancestor_pivot = ptr::null();
+            ancestor_pivot = None;
             continue;
         }
 
         let (left, right) = v.split_at_mut(mid);
 
         let new_ancestor_pivot = if const { !has_direct_interior_mutability::<T>() } {
-            &pivot_copy as *const ManuallyDrop<T> as *const T
+            // SAFETY: pivot_copy is valid and initialized, lives on the stack and as a consequence
+            // outlives the immediate call to stable_quicksort.
+            unsafe { Some(&*(&pivot_copy as *const ManuallyDrop<T> as *const T)) }
         } else {
-            ptr::null()
+            None
         };
 
         // Processing right side with recursion.
