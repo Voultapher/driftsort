@@ -80,11 +80,15 @@ fn slow_path_sort<T, F: FnMut(&T, &T) -> bool>(v: &mut [T], is_less: &mut F) {
 
     let len = v.len();
 
-    let alloc_size = if mem::size_of::<T>() * len <= MAX_FULL_ALLOC_BYTES {
-        len
-    } else {
-        len / 2
-    };
+    // Pick whichever is greater:
+    //
+    //  - alloc n up to MAX_FULL_ALLOC_BYTES
+    //  - alloc n / 2
+    //
+    // This serves to make the impact and performance cliff when going above the threshold less
+    // severe than immediately switching to len / 2.
+    let full_alloc_size = cmp::min(len, MAX_FULL_ALLOC_BYTES / mem::size_of::<T>());
+    let alloc_size = cmp::max(len / 2, full_alloc_size);
 
     let mut scratch: Vec<T> = Vec::with_capacity(alloc_size);
     let scratch_slice = unsafe {
