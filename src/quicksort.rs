@@ -22,11 +22,11 @@ pub fn stable_quicksort<T, F>(
 ) where
     F: FnMut(&T, &T) -> bool,
 {
-    // To improve filtering out of common values with equal partition, we remember the pivot
-    // ancestor_pivotecessor and use that to compare the next pivot selection. Because we can't move the
-    // relative position of the pivot in a stable sort and subsequent partitioning may change
-    // the position, its easier to simply make a copy of the pivot value and use that for
-    // further comparisons.
+    // To improve filtering out of common values with equal partition, we remember the
+    // ancestor_pivot and use that to compare it to the next pivot selection. Because we can't move
+    // the relative position of the pivot in a stable sort and subsequent partitioning may change
+    // the position, its easier to simply make a copy of the pivot value and use that for further
+    // comparisons.
 
     loop {
         if v.len() <= SMALL_SORT_THRESHOLD {
@@ -44,7 +44,7 @@ pub fn stable_quicksort<T, F>(
 
         let mut should_do_equal_partition = false;
 
-        // If the chosen pivot is equal to the ancestor_pivotecessor, then it's the smallest element in the
+        // If the chosen pivot is equal to the ancestor_pivot, then it's the smallest element in the
         // slice. Partition the slice into elements equal to and elements greater than the pivot.
         // This case is usually hit when the slice contains many duplicate elements.
         if !ancestor_pivot.is_null() {
@@ -58,7 +58,7 @@ pub fn stable_quicksort<T, F>(
         // `is_less` would not be observed and this would be unsound.
         //
         // It's important we do this after we picked the pivot and checked it against the
-        // ancestor_pivotecessor, but before we change v again by partitioning.
+        // ancestor_pivot, but before we change v again by partitioning.
         let pivot_copy = unsafe { ManuallyDrop::new(ptr::read(&v[pivot])) };
 
         let mut mid = 0;
@@ -240,7 +240,7 @@ where
         for i in 0..len {
             reverse_out = reverse_out.sub(1);
 
-            // This should only happen once and should be ancestor_pivoticted very well. This is required to
+            // This should only happen once and should be predicted very well. This is required to
             // handle types with interior mutability. See comment above for more info.
             if i == pivot_pos {
                 // We move the pivot in its correct place later.
