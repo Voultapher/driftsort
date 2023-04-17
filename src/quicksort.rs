@@ -4,7 +4,7 @@ use core::ptr;
 use crate::has_direct_interior_mutability;
 
 // Switch to a dedicated small array sorting algorithm below this threshold.
-const SMALL_SORT_THRESHOLD: usize = 20;
+pub const SMALL_SORT_THRESHOLD: usize = 20;
 
 // Recursively select a pseudomedian if above this threshold.
 const PSEUDO_MEDIAN_REC_THRESHOLD: usize = 64;

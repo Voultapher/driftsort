@@ -198,7 +198,7 @@ fn create_run<T, F: FnMut(&T, &T) -> bool>(
         } else {
             // We are not allowed to generate unsorted sequences in this mode. This mode is used as
             // fallback algorithm for quicksort. Essentially falling back to merge sort.
-            let run_end = cmp::min(FALLBACK_RUN_LEN, len);
+            let run_end = cmp::min(crate::quicksort::SMALL_SORT_THRESHOLD, len);
             smallsort::sort_small(&mut v[..run_end], is_less);
 
             DriftsortRun::new_sorted(run_end)
@@ -302,4 +302,9 @@ const fn has_direct_interior_mutability<T>() -> bool {
     //   that must be observed after the sort operation concludes.
     //   Otherwise a type like Mutex<Option<Box<str>>> could lead to double free.
     !<T as IsFreeze>::value()
+}
+
+#[must_use]
+const fn is_cheap_to_move<T>() -> bool {
+    mem::size_of::<T>() <= mem::size_of::<[usize; 4]>()
 }
