@@ -112,85 +112,95 @@ pub fn sort<T, F: FnMut(&T, &T) -> bool>(
 ) {
     // What's the smallest possible sub-slice that is considered a already sorted run and used for
     // merging.
-    const MIN_MERGE_SLICE_LEN: usize = 16;
+    const MIN_MERGE_SLICE_LEN: usize = 32;
+
+    // For small slices the cost of doing the main driftsort hybrid merge- quick-sort loop has a
+    // large cost. So for smaller slices just create a single run and either quicksort that or use
+    // it if it is already fully sorted.
+    const MIN_HYBRID_LEN: usize = 96;
 
     let len = v.len();
     if len < 2 {
         return; // Removing this length check *increases* code size.
     }
 
-    let scale_factor = merge_tree_scale_factor(len);
-
-    let min_good_run_len = cmp::max(sqrt_approx(len), MIN_MERGE_SLICE_LEN);
-
-    // (stack_len, runs, desired_depths) together form a stack maintaining run
-    // information for the powersort heuristic. desired_depths[i] is the desired
-    // depth of the merge node that merges runs[i] with the run that comes after
-    // it.
-    let mut stack_len = 0;
-    let mut run_storage = MaybeUninit::<[DriftsortRun; 66]>::uninit();
-    let runs: *mut DriftsortRun = run_storage.as_mut_ptr().cast();
-    let mut desired_depth_storage = MaybeUninit::<[u8; 66]>::uninit();
-    let desired_depths: *mut u8 = desired_depth_storage.as_mut_ptr().cast();
-
-    let mut scan_idx = 0;
     let mut prev_run = DriftsortRun::new_sorted(0); // Initial dummy run.
-    loop {
-        // Compute the next run and the desired depth of the merge node between
-        // prev_run and next_run. On the last iteration we create a dummy run
-        // with root-level desired depth to fully collapse the merge tree.
-        let (next_run, desired_depth);
-        if scan_idx < len {
-            next_run = crate::create_run(&mut v[scan_idx..], min_good_run_len, eager_sort, is_less);
-            desired_depth = merge_tree_depth(
-                scan_idx - prev_run.len(),
-                scan_idx,
-                scan_idx + next_run.len(),
-                scale_factor,
-            );
-        } else {
-            next_run = DriftsortRun::new_sorted(0);
-            desired_depth = 0;
-        };
 
-        // Process the merge nodes between earlier runs[i] that have a desire to
-        // be deeper in the merge tree than the merge node for the splitpoint
-        // between prev_run and next_run.
-        unsafe {
-            // SAFETY: first note that this is the only place we modify stack_len,
-            // runs or desired depths. We maintain the following invariants:
-            //  1. The first stack_len elements of runs/desired_depths are initialized.
-            //  2. For all valid i > 0, desired_depths[i] < desired_depths[i+1].
-            //  3. The sum of all valid runs[i].len() plus prev_run.len() equals
-            //     scan_idx.
-            while stack_len > 1 && *desired_depths.add(stack_len - 1) >= desired_depth {
-                // Desired depth greater than the upcoming desired depth, pop
-                // left neighbor run from stack and merge into prev_run.
-                let left = *runs.add(stack_len - 1);
-                let merged_len = left.len() + prev_run.len();
-                let merge_start_idx = scan_idx - merged_len;
-                let merge_slice = v.get_unchecked_mut(merge_start_idx..scan_idx);
-                prev_run = logical_merge(merge_slice, scratch, left, prev_run, is_less);
-                stack_len -= 1;
+    if len < MIN_HYBRID_LEN && len <= scratch.len() && !eager_sort {
+        prev_run = crate::create_run(v, len, /*eager_sort=*/ false, is_less);
+    } else {
+        let scale_factor = merge_tree_scale_factor(len);
+        let min_good_run_len = cmp::max(sqrt_approx(len), MIN_MERGE_SLICE_LEN);
+
+        // (stack_len, runs, desired_depths) together form a stack maintaining run
+        // information for the powersort heuristic. desired_depths[i] is the desired
+        // depth of the merge node that merges runs[i] with the run that comes after
+        // it.
+        let mut stack_len = 0;
+        let mut run_storage = MaybeUninit::<[DriftsortRun; 66]>::uninit();
+        let runs: *mut DriftsortRun = run_storage.as_mut_ptr().cast();
+        let mut desired_depth_storage = MaybeUninit::<[u8; 66]>::uninit();
+        let desired_depths: *mut u8 = desired_depth_storage.as_mut_ptr().cast();
+
+        let mut scan_idx = 0;
+        loop {
+            // Compute the next run and the desired depth of the merge node between
+            // prev_run and next_run. On the last iteration we create a dummy run
+            // with root-level desired depth to fully collapse the merge tree.
+            let (next_run, desired_depth);
+            if scan_idx < len {
+                next_run =
+                    crate::create_run(&mut v[scan_idx..], min_good_run_len, eager_sort, is_less);
+                desired_depth = merge_tree_depth(
+                    scan_idx - prev_run.len(),
+                    scan_idx,
+                    scan_idx + next_run.len(),
+                    scale_factor,
+                );
+            } else {
+                next_run = DriftsortRun::new_sorted(0);
+                desired_depth = 0;
+            };
+
+            // Process the merge nodes between earlier runs[i] that have a desire to
+            // be deeper in the merge tree than the merge node for the splitpoint
+            // between prev_run and next_run.
+            unsafe {
+                // SAFETY: first note that this is the only place we modify stack_len,
+                // runs or desired depths. We maintain the following invariants:
+                //  1. The first stack_len elements of runs/desired_depths are initialized.
+                //  2. For all valid i > 0, desired_depths[i] < desired_depths[i+1].
+                //  3. The sum of all valid runs[i].len() plus prev_run.len() equals
+                //     scan_idx.
+                while stack_len > 1 && *desired_depths.add(stack_len - 1) >= desired_depth {
+                    // Desired depth greater than the upcoming desired depth, pop
+                    // left neighbor run from stack and merge into prev_run.
+                    let left = *runs.add(stack_len - 1);
+                    let merged_len = left.len() + prev_run.len();
+                    let merge_start_idx = scan_idx - merged_len;
+                    let merge_slice = v.get_unchecked_mut(merge_start_idx..scan_idx);
+                    prev_run = logical_merge(merge_slice, scratch, left, prev_run, is_less);
+                    stack_len -= 1;
+                }
+
+                // We now know that desired_depths[stack_len - 1] < desired_depth,
+                // maintaining our invariant. This also guarantees we don't overflow
+                // the stack as merge_tree_depth(..) <= 64 and thus we can only have
+                // 64 distinct values on the stack before pushing, plus our initial
+                // dummy run, while our capacity is 66.
+                *runs.add(stack_len) = prev_run;
+                *desired_depths.add(stack_len) = desired_depth;
+                stack_len += 1;
             }
 
-            // We now know that desired_depths[stack_len - 1] < desired_depth,
-            // maintaining our invariant. This also guarantees we don't overflow
-            // the stack as merge_tree_depth(..) <= 64 and thus we can only have
-            // 64 distinct values on the stack before pushing, plus our initial
-            // dummy run, while our capacity is 66.
-            *runs.add(stack_len) = prev_run;
-            *desired_depths.add(stack_len) = desired_depth;
-            stack_len += 1;
-        }
+            // Break before overriding the last run with our dummy run.
+            if scan_idx >= len {
+                break;
+            }
 
-        // Break before overriding the last run with our dummy run.
-        if scan_idx >= len {
-            break;
+            scan_idx += next_run.len();
+            prev_run = next_run;
         }
-
-        scan_idx += next_run.len();
-        prev_run = next_run;
     }
 
     if !prev_run.sorted() {

@@ -21,8 +21,6 @@ mod merge;
 mod quicksort;
 mod smallsort;
 
-const FALLBACK_RUN_LEN: usize = 10;
-
 /// Compactly stores the length of a run, and whether or not it is sorted. This
 /// can always fit in a usize because the maximum slice length is isize::MAX.
 #[derive(Copy, Clone)]
@@ -163,20 +161,19 @@ fn stable_quicksort<T, F: FnMut(&T, &T) -> bool>(
 }
 
 /// Create a new logical run, that is either sorted or unsorted.
+#[inline(never)]
 fn create_run<T, F: FnMut(&T, &T) -> bool>(
     v: &mut [T],
     mut min_good_run_len: usize,
     eager_sort: bool,
     is_less: &mut F,
 ) -> DriftsortRun {
-    // FIXME: run detection.
-
     let len = v.len();
 
     let (streak_end, was_reversed) = find_streak(v, is_less);
 
     if eager_sort {
-        min_good_run_len = FALLBACK_RUN_LEN;
+        min_good_run_len = crate::quicksort::SMALL_SORT_THRESHOLD;
     }
 
     // It's important to have a relatively high entry barrier for pre-sorted runs, as the presence
