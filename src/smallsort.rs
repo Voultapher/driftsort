@@ -118,7 +118,7 @@ impl<T> SmallSortTypeImpl for T {
     }
 }
 
-impl<T: Copy + crate::Freeze> SmallSortTypeImpl for T {
+impl<T: crate::Freeze> SmallSortTypeImpl for T {
     fn small_sort<F>(v: &mut [Self], is_less: &mut F)
     where
         F: FnMut(&T, &T) -> bool,
@@ -127,13 +127,6 @@ impl<T: Copy + crate::Freeze> SmallSortTypeImpl for T {
 
         let len = v.len();
 
-        if const { !crate::is_cheap_to_move::<T>() } {
-            if len >= 2 {
-                insertion_sort_shift_left(v, 1, is_less);
-            }
-            return;
-        }
-
         let mut scratch = MaybeUninit::<[T; MAX_SIZE]>::uninit();
         let scratch_ptr = scratch.as_mut_ptr() as *mut T;
 
@@ -141,10 +134,12 @@ impl<T: Copy + crate::Freeze> SmallSortTypeImpl for T {
             let even_len = len - (len % 2 != 0) as usize;
             let len_div_2 = even_len / 2;
 
-            // SAFETY: scratch_ptr is valid and has enough space.
+            // SAFETY: scratch_ptr is valid and has enough space. And we checked that both
+            // v[..len_div_2] and v[len_div_2..] are at least 8 large.
             unsafe {
-                sort8_stable(&mut v[..8], scratch_ptr, is_less);
-                sort8_stable(&mut v[len_div_2..(len_div_2 + 8)], scratch_ptr, is_less);
+                let arr_ptr = v.as_mut_ptr();
+                sort8_stable(arr_ptr, scratch_ptr, is_less);
+                sort8_stable(arr_ptr.add(len_div_2), scratch_ptr, is_less);
             }
 
             insertion_sort_shift_left(&mut v[0..len_div_2], 8, is_less);
@@ -168,7 +163,7 @@ impl<T: Copy + crate::Freeze> SmallSortTypeImpl for T {
             let offset = if len >= 8 {
                 // SAFETY: scratch_ptr is valid and has enough space.
                 unsafe {
-                    sort8_stable(&mut v[..8], scratch_ptr, is_less);
+                    sort8_stable(v.as_mut_ptr(), scratch_ptr, is_less);
                 }
 
                 8
@@ -181,94 +176,109 @@ impl<T: Copy + crate::Freeze> SmallSortTypeImpl for T {
     }
 }
 
-/// Swap two values in array pointed to by a_ptr and b_ptr if b is less than a.
-#[inline(always)]
-unsafe fn branchless_swap<T>(a_ptr: *mut T, b_ptr: *mut T, should_swap: bool) {
-    // SAFETY: the caller must guarantee that `a_ptr` and `b_ptr` are valid for writes
-    // and properly aligned, and part of the same allocation, and do not alias.
-
-    // This is a branchless version of swap if.
-    // The equivalent code with a branch would be:
-    //
-    // if should_swap {
-    //     ptr::swap_nonoverlapping(a_ptr, b_ptr, 1);
-    // }
-
-    // Give ourselves some scratch space to work with.
-    // We do not have to worry about drops: `MaybeUninit` does nothing when dropped.
-    let mut tmp = MaybeUninit::<T>::uninit();
-
-    // The goal is to generate cmov instructions here.
-    let a_swap_ptr = if should_swap { b_ptr } else { a_ptr };
-    let b_swap_ptr = if should_swap { a_ptr } else { b_ptr };
-
-    ptr::copy_nonoverlapping(b_swap_ptr, tmp.as_mut_ptr(), 1);
-    ptr::copy(a_swap_ptr, a_ptr, 1);
-    ptr::copy_nonoverlapping(tmp.as_ptr(), b_ptr, 1);
-}
-
-/// Swap two values in array pointed to by a_ptr and b_ptr if b is less than a.
-#[inline(always)]
-pub unsafe fn swap_next_if_less<T, F>(arr_ptr: *mut T, idx: usize, is_less: &mut F)
+/// SAFETY: The caller MUST guarantee that `arr_ptr` is valid for 4 reads and `dest_ptr` is valid
+/// for 4 writes.
+pub unsafe fn sort4_stable<T, F>(arr_ptr: *const T, dest_ptr: *mut T, is_less: &mut F)
 where
     F: FnMut(&T, &T) -> bool,
 {
-    let a_ptr = arr_ptr.add(idx);
-    let b_ptr = arr_ptr.add(idx + 1);
+    // By limiting select to picking pointers, we are guaranteed good cmov code-gen regardless of
+    // type T layout. Further this only does 5 instead of 6 comparisons compared to a stable
+    // transposition 4 element sorting-network. Also by only operating on pointers, we get optimal
+    // element copy usage. Doing exactly 1 copy per element.
 
-    // PANIC SAFETY: if is_less panics, no scratch memory was created and the slice should still be
-    // in a well defined state, without duplicates.
+    // let arr_ptr = v.as_ptr();
 
-    // Important to only swap if it is more and not if it is equal. is_less should return false for
-    // equal, so we don't swap.
-    let should_swap = is_less(&*b_ptr, &*a_ptr);
-    branchless_swap(a_ptr, b_ptr, should_swap);
-}
-
-// Never inline this function to avoid code bloat. It still optimizes nicely and has practically no
-// performance impact.
-#[inline(never)]
-fn sort4_stable<T, F>(v: &mut [T], is_less: &mut F)
-where
-    F: FnMut(&T, &T) -> bool,
-{
-    // SAFETY: caller must ensure v.len() >= 4.
-    assert!(v.len() == 4);
-
-    let arr_ptr = v.as_mut_ptr();
-
-    // Optimal sorting network see:
-    // https://bertdobbelaere.github.io/sorting_networks.html.
-
-    // SAFETY: We checked the len.
     unsafe {
-        swap_next_if_less(arr_ptr, 0, is_less);
-        swap_next_if_less(arr_ptr, 2, is_less);
-        swap_next_if_less(arr_ptr, 1, is_less);
+        // Stably create two pairs a <= b and c <= d.
+        let c1 = is_less(&*arr_ptr.add(1), &*arr_ptr) as usize;
+        let c2 = is_less(&*arr_ptr.add(3), &*arr_ptr.add(2)) as usize;
+        let a = arr_ptr.add(c1);
+        let b = arr_ptr.add(c1 ^ 1);
+        let c = arr_ptr.add(2 + c2);
+        let d = arr_ptr.add(2 + (c2 ^ 1));
 
-        swap_next_if_less(arr_ptr, 0, is_less);
-        swap_next_if_less(arr_ptr, 2, is_less);
-        swap_next_if_less(arr_ptr, 1, is_less);
+        // Compare (a, c) and (b, d) to identify max/min. We're left with two
+        // unknown elements, but because we are a stable sort we must know which
+        // one is leftmost and which one is rightmost.
+        // c3, c4 | min max unknown_left unknown_right
+        //  0,  0 |  a   d    b         c
+        //  0,  1 |  a   b    c         d
+        //  1,  0 |  c   d    a         b
+        //  1,  1 |  c   b    a         d
+        let c3 = is_less(&*c, &*a);
+        let c4 = is_less(&*d, &*b);
+        let min = select(c3, c, a);
+        let max = select(c4, b, d);
+        let unknown_left = select(c3, a, select(c4, c, b));
+        let unknown_right = select(c4, d, select(c3, b, c));
+
+        // Sort the last two unknown elements.
+        let c5 = is_less(&*unknown_right, &*unknown_left);
+        let lo = select(c5, unknown_right, unknown_left);
+        let hi = select(c5, unknown_left, unknown_right);
+
+        ptr::copy_nonoverlapping(min, dest_ptr, 1);
+        ptr::copy_nonoverlapping(lo, dest_ptr.add(1), 1);
+        ptr::copy_nonoverlapping(hi, dest_ptr.add(2), 1);
+        ptr::copy_nonoverlapping(max, dest_ptr.add(3), 1);
+    }
+
+    #[inline(always)]
+    pub fn select<T>(cond: bool, if_true: *const T, if_false: *const T) -> *const T {
+        if cond {
+            if_true
+        } else {
+            if_false
+        }
     }
 }
 
+/// SAFETY: The caller MUST guarantee that `arr_ptr` is valid for 8 reads and writes, and
+/// `scratch_ptr` is valid for 8 writes.
 #[inline(never)]
-unsafe fn sort8_stable<T, F>(v: &mut [T], scratch_ptr: *mut T, is_less: &mut F)
+unsafe fn sort8_stable<T, F>(arr_ptr: *mut T, scratch_ptr: *mut T, is_less: &mut F)
 where
     F: FnMut(&T, &T) -> bool,
 {
-    // SAFETY: caller must ensure v.len() >= 4.
-    assert!(v.len() == 8);
-
-    sort4_stable(&mut v[..4], is_less);
-    sort4_stable(&mut v[4..8], is_less);
+    // SAFETY: The caller must guarantee that scratch_ptr is valid for 8 writes, and that arr_ptr is
+    // valid for 8 reads.
+    unsafe {
+        sort4_stable(arr_ptr, scratch_ptr, is_less);
+        sort4_stable(arr_ptr.add(4), scratch_ptr.add(4), is_less);
+    }
 
     // SAFETY: We checked that T is Copy and thus observation safe.
     // Should is_less panic v was not modified in parity_merge and retains it's original input.
     // swap and v must not alias and swap has v.len() space.
     unsafe {
-        bi_directional_merge_even(&mut v[..8], scratch_ptr, is_less);
-        ptr::copy_nonoverlapping(scratch_ptr, v.as_mut_ptr(), 8);
+        // It's slightly faster to merge directly into v and copy over the 'safe' elements of swap
+        // into v only if there was a panic. This technique is also known as ping-pong merge.
+        let drop_guard = DropGuard {
+            src: scratch_ptr,
+            dest: arr_ptr,
+        };
+        bi_directional_merge_even(
+            &*ptr::slice_from_raw_parts(scratch_ptr, 8),
+            arr_ptr,
+            is_less,
+        );
+        mem::forget(drop_guard);
+    }
+
+    struct DropGuard<T> {
+        src: *const T,
+        dest: *mut T,
+    }
+
+    impl<T> Drop for DropGuard<T> {
+        fn drop(&mut self) {
+            // SAFETY: `T` is not a zero-sized type, src must hold the original 8 elements of v in
+            // any order. And dest must be valid to write 8 elements.
+            unsafe {
+                ptr::copy_nonoverlapping(self.src, self.dest, 8);
+            }
+        }
     }
 }
 

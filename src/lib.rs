@@ -303,8 +303,3 @@ const fn has_direct_interior_mutability<T>() -> bool {
     //   Otherwise a type like Mutex<Option<Box<str>>> could lead to double free.
     !<T as IsFreeze>::value()
 }
-
-#[must_use]
-const fn is_cheap_to_move<T>() -> bool {
-    mem::size_of::<T>() <= mem::size_of::<[usize; 4]>()
-}
