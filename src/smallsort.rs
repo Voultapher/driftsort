@@ -130,8 +130,8 @@ impl<T: crate::Freeze> SmallSortTypeImpl for T {
         let mut scratch = MaybeUninit::<[T; MAX_SIZE]>::uninit();
         let scratch_ptr = scratch.as_mut_ptr() as *mut T;
 
-        if len >= 16 {
-            let even_len = len - (len % 2 != 0) as usize;
+        if len >= 16 && len <= MAX_SIZE {
+            let even_len = len - (len % 2);
             let len_div_2 = even_len / 2;
 
             // SAFETY: scratch_ptr is valid and has enough space. And we checked that both
@@ -249,7 +249,7 @@ where
     }
 
     // SAFETY: We checked that T is Copy and thus observation safe.
-    // Should is_less panic v was not modified in parity_merge and retains it's original input.
+    // Should is_less panic v was not modified in parity_merge and retains its original input.
     // swap and v must not alias and swap has v.len() space.
     unsafe {
         // It's slightly faster to merge directly into v and copy over the 'safe' elements of swap
