@@ -1,3 +1,4 @@
+use core::intrinsics;
 use core::mem::{ManuallyDrop, MaybeUninit};
 use core::ptr;
 
@@ -61,14 +62,14 @@ pub fn stable_quicksort<T, F>(
         let mut mid = 0;
 
         if !should_do_equal_partition {
-            mid = stable_partition(v, scratch, pivot, is_less, false);
+            mid = stable_partition(v, scratch, pivot, is_less);
 
             // Fallback for non Freeze types.
             should_do_equal_partition = mid == 0;
         }
 
         if should_do_equal_partition {
-            let mid_eq = stable_partition(v, scratch, pivot, &mut |a, b| !is_less(b, a), true);
+            let mid_eq = stable_partition(v, scratch, pivot, &mut |a, b| !is_less(b, a));
             v = &mut v[mid_eq..];
             ancestor_pivot = None;
             continue;
@@ -192,91 +193,97 @@ fn stable_partition<T, F>(
     scratch: &mut [MaybeUninit<T>],
     pivot_pos: usize,
     is_less: &mut F,
-    pivot_goes_left: bool,
 ) -> usize
 where
     F: FnMut(&T, &T) -> bool,
 {
     let len = v.len();
-    let arr = v.as_mut_ptr();
+    let arr_ptr = v.as_mut_ptr();
 
-    // Inside the main partitioning loop we MUST NOT compare out stack copy of the pivot value with
-    // the original value in the slice `v`. If we just write the value as pointed to by `src` into
-    // `buf` as it was in the input slice `v` we would risk that the call to the user-provided
-    // `is_less` modifies the value pointed to by `src`. This could be UB for types such as
-    // `Mutex<Option<Box<String>>>` where during the comparison it replaces the box with None,
-    // leading to double free. As the value written back into `v` from `buf` did not observe that
-    // modification.
+    // Inside the main partitioning loop we MUST NOT compare our stack copy of the pivot value with
+    // the original value in the slice `v`. If we just write the value as pointed to by `src_ptr`
+    // into `sctratch_ptr` as it was in the input slice `v` we would risk that the call to the
+    // user-provided `is_less` modifies the value pointed to by `src_ptr`. This could be UB for
+    // types such as `Mutex<Option<Box<String>>>` where during the comparison it replaces the box
+    // with None, leading to double free. As the value written back into `v` from `sctratch_ptr` did
+    // not observe that modification.
 
     // SAFETY: TODO
     unsafe {
         assert!(scratch.len() >= len);
-        let buf = MaybeUninit::slice_as_mut_ptr(scratch);
+        let scratch_ptr = MaybeUninit::slice_as_mut_ptr(scratch);
 
-        // It's crucial that pivot_hole will be copied back to the input if any comparison in the
-        // loop panics. Because it could have changed due to interior mutability.
-        struct PivotGuard<T> {
-            value: ManuallyDrop<T>,
-            hole: *mut T,
-        }
-
-        impl<T> Drop for PivotGuard<T> {
-            fn drop(&mut self) {
-                unsafe {
-                    ptr::copy_nonoverlapping(&*self.value, self.hole, 1);
-                }
-            }
-        }
-
-        let pivot = PivotGuard {
+        let pivot_guard = PivotGuard {
             value: ManuallyDrop::new(ptr::read(&v[pivot_pos])),
-            hole: arr.add(pivot_pos),
+            hole: arr_ptr.add(pivot_pos),
         };
+        let pivot: &T = &pivot_guard.value;
 
-        let mut pivot_partioned_ptr = ptr::null_mut();
-        let mut l_count = 0;
-        let mut reverse_out = buf.add(len);
+        let mut pivot_out_ptr = ptr::null_mut();
+
+        // lt == less than, ge == greater or equal
+        let mut lt_count = 0;
+        let mut ge_out_ptr = scratch_ptr.add(len);
         for i in 0..len {
-            reverse_out = reverse_out.sub(1);
+            ge_out_ptr = ge_out_ptr.sub(1);
 
-            // This should only happen once and should be predicted very well. This is required to
-            // handle types with interior mutability. See comment above for more info.
-            if i == pivot_pos {
-                // We move the pivot in its correct place later.
-                if pivot_goes_left {
-                    pivot_partioned_ptr = buf.add(l_count);
-                    l_count += 1;
-                } else {
-                    pivot_partioned_ptr = reverse_out.add(l_count);
+            if const { crate::has_direct_interior_mutability::<T>() } {
+                //  This is required to
+                // handle types with interior mutability. See comment above for more info.
+                if intrinsics::unlikely(i == pivot_pos) {
+                    // We move the pivot in its correct place later.
+                    if is_less(pivot, pivot) {
+                        pivot_out_ptr = scratch_ptr.add(lt_count);
+                        lt_count += 1;
+                    } else {
+                        pivot_out_ptr = ge_out_ptr.add(lt_count);
+                    }
+                    continue;
                 }
-                continue;
             }
 
-            let src = arr.add(i);
-            let less_than_pivot = is_less(&*src, &pivot.value);
-            let dst = if less_than_pivot {
-                buf.add(l_count)
+            let elem_ptr = arr_ptr.add(i);
+            let is_less_than_pivot = is_less(&*elem_ptr, pivot);
+            let dst = if is_less_than_pivot {
+                scratch_ptr.add(lt_count)
             } else {
-                reverse_out.add(l_count)
+                ge_out_ptr.add(lt_count)
             };
-            ptr::copy_nonoverlapping(src, dst, 1);
+            ptr::copy_nonoverlapping(elem_ptr, dst, 1);
 
-            l_count += less_than_pivot as usize;
+            lt_count += is_less_than_pivot as usize;
         }
 
-        // Move pivot into its correct position.
-        ptr::copy_nonoverlapping(&*pivot.value, pivot_partioned_ptr, 1);
-        core::mem::forget(pivot);
+        // Now that any possible observation of pivot has happened we copy it.
+        if const { has_direct_interior_mutability::<T>() } {
+            ptr::copy_nonoverlapping(pivot, pivot_out_ptr, 1);
+        }
+        core::mem::forget(pivot_guard);
 
         // Copy all the elements that were not equal directly from swap to v.
-        ptr::copy_nonoverlapping(buf, arr, l_count);
+        ptr::copy_nonoverlapping(scratch_ptr, arr_ptr, lt_count);
 
         // Copy the elements that were equal or more from the buf into v and reverse them.
-        let rev_buf_ptr = buf.add(len - 1);
-        for i in 0..len - l_count {
-            ptr::copy_nonoverlapping(rev_buf_ptr.sub(i), arr.add(l_count + i), 1);
+        let rev_buf_ptr = scratch_ptr.add(len - 1);
+        for i in 0..len - lt_count {
+            ptr::copy_nonoverlapping(rev_buf_ptr.sub(i), arr_ptr.add(lt_count + i), 1);
         }
 
-        l_count
+        lt_count
+    }
+}
+
+// It's crucial that pivot_hole will be copied back to the input if any comparison in the
+// loop panics. Because it could have changed due to interior mutability.
+struct PivotGuard<T> {
+    value: ManuallyDrop<T>,
+    hole: *mut T,
+}
+
+impl<T> Drop for PivotGuard<T> {
+    fn drop(&mut self) {
+        unsafe {
+            ptr::copy_nonoverlapping(&*self.value, self.hole, 1);
+        }
     }
 }
