@@ -145,7 +145,7 @@ impl<T: crate::Freeze> SmallSortTypeImpl for T {
             insertion_sort_shift_left(&mut v[0..len_div_2], 8, is_less);
             insertion_sort_shift_left(&mut v[len_div_2..], 8, is_less);
 
-            // SAFETY: We checked that T is Copy and thus observation safe. Should is_less panic v
+            // SAFETY: We checked that T is Freeze and thus observation safe. Should is_less panic v
             // was not modified in parity_merge and retains it's original input. swap and v must not
             // alias and swap has v.len() space.
             unsafe {
@@ -248,7 +248,7 @@ where
         sort4_stable(arr_ptr.add(4), scratch_ptr.add(4), is_less);
     }
 
-    // SAFETY: We checked that T is Copy and thus observation safe.
+    // SAFETY: We checked that T is Freeze and thus observation safe.
     // Should is_less panic v was not modified in parity_merge and retains its original input.
     // swap and v must not alias and swap has v.len() space.
     unsafe {
