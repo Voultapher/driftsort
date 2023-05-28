@@ -1,4 +1,4 @@
-use core::mem::{ManuallyDrop, MaybeUninit};
+use core::mem::{self, ManuallyDrop, MaybeUninit};
 use core::ptr;
 
 use crate::has_direct_interior_mutability;
@@ -183,11 +183,356 @@ where
     }
 }
 
+// FIXME remove
+fn stable_partition<T, F>(
+    v: &mut [T],
+    scratch: &mut [MaybeUninit<T>],
+    pivot_pos: usize,
+    is_less: &mut F,
+    pivot_goes_left: bool, // FIXME remove
+) -> usize
+where
+    F: FnMut(&T, &T) -> bool,
+{
+    if v.len() >= 128 && pivot_pos != v.len() - 1 {
+        // // FIXME testing.
+        // unsafe {
+        //     type DebugT = i32;
+        //     let mut v_copy = mem::transmute::<&[T], &[DebugT]>(v).to_vec();
+        //     let v_check = mem::transmute::<&mut [DebugT], &mut [T]>(&mut v_copy);
+        //     let out_check =
+        //         stable_partition_simple(v_check, scratch, pivot_pos, is_less, pivot_goes_left);
+
+        //     let out = stable_partition_bi(v, scratch, pivot_pos, is_less, pivot_goes_left);
+
+        //     assert_eq!(mem::transmute::<&[T], &[DebugT]>(v), &v_copy,);
+        //     assert_eq!(out, out_check);
+
+        //     out
+        // }
+
+        stable_partition_bi(v, scratch, pivot_pos, is_less, pivot_goes_left)
+    } else {
+        stable_partition_simple(v, scratch, pivot_pos, is_less, pivot_goes_left)
+    }
+}
+
+/// This is a branchless version of:
+///
+/// ```rust
+/// if $is_less(&*$elem_ptr, $pivot) {
+///     ptr::copy_nonoverlapping($elem_ptr, $lt_out_ptr, 1);
+///     $lt_out_ptr = $lt_out_ptr.add(1);
+/// } else {
+///     ptr::copy_nonoverlapping($elem_ptr, $ge_out_ptr, 1);
+///     $ge_out_ptr = $ge_out_ptr.sub(1);
+/// }
+///
+/// $elem_ptr = $elem_ptr.add(1);
+/// ```
+///
+/// This is a macro to avoid function call overhead for debug builds. And it simplifies value
+/// mutation.
+macro_rules! partition_select {
+    ($elem_ptr:expr, $lt_out_ptr:expr, $ge_out_ptr:expr, $pivot:expr, $is_less:expr) => {{
+        let is_l = $is_less(&*$elem_ptr, $pivot);
+        let out_ptr = if is_l { $lt_out_ptr } else { $ge_out_ptr };
+        ptr::copy_nonoverlapping($elem_ptr, out_ptr, 1);
+        $elem_ptr = $elem_ptr.add(1);
+        $lt_out_ptr = $lt_out_ptr.add(is_l as usize);
+        // TODO is that sub thing really better?
+        $ge_out_ptr = $ge_out_ptr.sub(1).add(is_l as usize);
+    }};
+}
+
+// TODO check perf impact of using partition_select_out in partition_select.
+macro_rules! partition_select_out {
+    ($lt_out_ptr:expr, $ge_out_ptr:expr, $cond:expr) => {{
+        let out_ptr = if $cond { $lt_out_ptr } else { $ge_out_ptr };
+        $lt_out_ptr = $lt_out_ptr.add($cond as usize);
+        // TODO is that sub thing really better?
+        $ge_out_ptr = $ge_out_ptr.sub(1).add($cond as usize);
+        out_ptr
+    }};
+}
 /// Partitions `v` into elements smaller than `pivot`, followed by elements
 /// greater than or equal to `pivot`.
 ///
 /// Returns the number of elements smaller than `pivot`.
-fn stable_partition<T, F>(
+fn stable_partition_bi<T, F>(
+    v: &mut [T],
+    scratch: &mut [MaybeUninit<T>],
+    pivot_pos: usize,
+    is_less: &mut F,
+    pivot_goes_left: bool,
+) -> usize
+where
+    F: FnMut(&T, &T) -> bool,
+{
+    // The idea is to interleave data-independent iterations inside the same loop iteration. This
+    // greatly improves instruction-level parallelism (ILP). Calling memcpy is expensive especially
+    // if len(v) is small. We want to avoid the branch to check if the element we are comparing to
+    // is the pivot element. The naive tiling would have 4 memcpy and 4 reverse copies. By being
+    // careful how we split up the slice we can reduce this down to 2 memcpy and 2 reverse copies.
+
+    // First we split the slice into 4 regions. So that len(A1) == len(A2) and len(B1) == len(B2),
+    // and len(A1) + len(B1) == len(v) / 2.
+    //
+    // e == regular element
+    // p == pivot element
+    // x == extra element that doesn't fit into even len parts.
+    // c == chop off element because of uneven len
+    //
+    // E.g. len(v) == 36, pivot_pos == 7:
+    // [eeeeeeep|eeeeeeeeee|eeeeeeex|eeeeeeeeee]
+    //    A1         B1        A2         B2     len(A1) == 7, len(B1) == 10
+    //
+    // E.g. len(v) == 36, pivot_pos == 19:
+    // [ex|eeeeeeeeeeeeeeee|ep|eeeeeeeeeeeeeeee]
+    //  A1        B1        A2        B2         len(A1) == 1, len(B1) == 16
+    //
+    // E.g. len(v) == 37, pivot_pos == 0:
+    // [p|eeeeeeeeeeeeeeeee|x|eeeeeeeeeeeeeeeeec]
+    //  A1        B1        A2        B2         len(A1) == 0, len(B1) == 17
+    //
+    // E.g. len(v) == 37, pivot_pos == 20:
+    // [eex|eeeeeeeeeeeeeee|eep|eeeeeeeeeeeeeeec]
+    //  A1        B1        A2        B2         len(A1) == 2, len(B1) == 15
+    //
+    // E.g. len(v) == 37, pivot_pos == 36: TODO
+    // [eeeeeeeeeeeeeeeee||eeeeeeeeeeeeeeeeep|]
+    //        A1         B1        A2        B2  len(A1) == 17, len(B1) == 0
+    //
+    // First pivot step in scratch, A1 and A2 in parallel growing from ends and middle.
+    // scratch: [->   A1    <-|->    A2   <-]
+    //          [A1 |    | A1 | A2 |    | A2]
+    //          [<  |    | >= | <  |    | >=]
+    //
+    // Second pivot step in scratch, B1 and B2 in parallel growing from previous call bounds.
+    // scratch: [A1 | B1 | A1 | A2 | B2 | A2]
+    //          [<  |-><-| >= | <  |-><-| >=]
+    //          [<  |<|>=| >= | <  |<|>=| >=]
+
+    let len = v.len();
+    let arr_ptr = v.as_mut_ptr();
+
+    assert!(scratch.len() >= len && pivot_pos < len);
+    let scratch_ptr = MaybeUninit::slice_as_mut_ptr(scratch);
+
+    // SAFETY: TODO
+    let pivot_guard = unsafe {
+        PivotGuard {
+            value: ManuallyDrop::new(ptr::read(&v[pivot_pos])),
+            hole: arr_ptr.add(pivot_pos),
+        }
+    };
+    let pivot: &T = &pivot_guard.value;
+
+    // Maybe saturating sub?
+    // dbg!(len, pivot_pos, pivot_goes_left);
+
+    let len_div_2 = len / 2;
+    let even_len = len - (len % 2 != 0) as usize;
+    let pivot_on_left_side = pivot_pos < len_div_2;
+
+    let a_len = pivot_pos - if pivot_on_left_side { 0 } else { len_div_2 };
+    let b_len = len_div_2 - (a_len + 1);
+    // println!("\nlen: {len}, pivot_pos: {pivot_pos} a_len: {a_len} b_len: {b_len}");
+
+    // debug_assert!((a_len + b_len + is_even_len as usize) == len_div_2);
+
+    // SAFETY:
+    // - x_ptr[..len] is valid to read
+    // - x_ptr[..len] does not overlap with pivot (relevant if T has interior mutability)
+    // - x_lt_out_ptr[..len] is valid to write
+    // - x_ge_out_ptr.sub(len)[..len] is valid to write
+    unsafe {
+        // // FIXME
+        // type DebugT = i32;
+        // let v_as_x = std::mem::transmute::<&[T], &[DebugT]>(v);
+        // let scratch_as_x = std::mem::transmute::<&[MaybeUninit<T>], &[DebugT]>(&scratch[..len]);
+        // for i in 0..len {
+        //     (scratch_ptr.add(i) as *mut DebugT).write(0);
+        // }
+        // println!("v: {v_as_x:?}");
+        // println!("s: {scratch_as_x:?}");
+
+        // lt == less than, ge == greater or equal
+        let mut a1_ptr = arr_ptr;
+        let mut a1_lt_out_ptr = scratch_ptr;
+        let mut a1_ge_out_ptr = scratch_ptr.add(len_div_2 - 1);
+
+        let mut a2_ptr = arr_ptr.add(len_div_2);
+        let mut a2_lt_out_ptr = scratch_ptr.add(len_div_2);
+        let mut a2_ge_out_ptr = scratch_ptr.add(even_len - 1);
+
+        // println!(
+        //     "a1_lt_out_ptr pos: {}, a1_ge_out_ptr pos: {}",
+        //     a1_lt_out_ptr.sub_ptr(scratch_ptr),
+        //     a1_ge_out_ptr.sub_ptr(scratch_ptr)
+        // );
+
+        // TODO perf of for _ in 0..a_len loop vs while a1_ptr -> end
+        // let end_ptr = arr_ptr.add(a_len);
+        // while a1_ptr < end_ptr {
+        for _ in 0..a_len {
+            partition_select!(a1_ptr, a1_lt_out_ptr, a1_ge_out_ptr, pivot, is_less);
+            partition_select!(a2_ptr, a2_lt_out_ptr, a2_ge_out_ptr, pivot, is_less);
+        }
+
+        // println!(
+        //     "a1_ptr pos: {} a2_ptr pos: {}",
+        //     a1_ptr.sub_ptr(arr_ptr),
+        //     a2_ptr.sub_ptr(arr_ptr)
+        // );
+
+        // println!(
+        //     "a1_lt_out_ptr pos: {}, a1_ge_out_ptr pos: {}",
+        //     a1_lt_out_ptr.sub_ptr(scratch_ptr),
+        //     a1_ge_out_ptr.sub_ptr(scratch_ptr)
+        // );
+
+        // println!("s1: {scratch_as_x:?}");
+        // Remember where to copy pivot into, and take care of x elem.
+        let pivot_hole_ptr;
+        if pivot_on_left_side {
+            pivot_hole_ptr = partition_select_out!(a1_lt_out_ptr, a1_ge_out_ptr, pivot_goes_left);
+            a1_ptr = a1_ptr.add(1);
+
+            // x elem is on the right side.
+            partition_select!(a2_ptr, a2_lt_out_ptr, a2_ge_out_ptr, pivot, is_less);
+        } else {
+            pivot_hole_ptr = partition_select_out!(a2_lt_out_ptr, a2_ge_out_ptr, pivot_goes_left);
+            a2_ptr = a2_ptr.add(1);
+
+            // x elem is on the left side.
+            partition_select!(a1_ptr, a1_lt_out_ptr, a1_ge_out_ptr, pivot, is_less);
+        }
+        // println!("s2: {scratch_as_x:?}");
+
+        // println!(
+        //     "a1_lt_out_ptr pos: {}, a1_ge_out_ptr pos: {}",
+        //     a1_lt_out_ptr.sub_ptr(scratch_ptr),
+        //     a1_ge_out_ptr.sub_ptr(scratch_ptr)
+        // );
+
+        let mut b1_ptr = a1_ptr;
+        let mut b1_lt_out_ptr = a1_lt_out_ptr;
+        let mut b1_ge_out_ptr = a1_ge_out_ptr;
+
+        let mut b2_ptr = a2_ptr;
+        let mut b2_lt_out_ptr = a2_lt_out_ptr;
+        let mut b2_ge_out_ptr = a2_ge_out_ptr;
+
+        // let end_ptr = arr_ptr.add(len);
+        for _ in 0..b_len {
+            partition_select!(b1_ptr, b1_lt_out_ptr, b1_ge_out_ptr, pivot, is_less);
+            partition_select!(b2_ptr, b2_lt_out_ptr, b2_ge_out_ptr, pivot, is_less);
+        }
+
+        // println!("s3: {scratch_as_x:?}");
+
+        // println!(
+        //     "pivot val: {}",
+        //     &*(&pivot_guard.value as &T as *const T as *const DebugT)
+        // );
+
+        let a1_b1_lt_len = b1_lt_out_ptr.sub_ptr(scratch_ptr);
+        let a2_b2_lt_len = b2_lt_out_ptr.sub_ptr(scratch_ptr.add(len_div_2));
+
+        let c_elem_ptr = arr_ptr.add(len - 1);
+        let mut c_elem_lt = false;
+        if len != even_len {
+            // Take care of c elem. It sits at the end of b2. It will have to either go to the end
+            // of the lt elements or go to the end of v, where it already is.
+            // TODO branchless.
+            c_elem_lt = is_less(&*c_elem_ptr, pivot);
+        }
+
+        // Now that any possible observation of pivot has happened we copy it.
+        // println!(
+        //     "pivot_hole_ptr pos: {} val: {}",
+        //     pivot_hole_ptr.sub_ptr(scratch_ptr),
+        //     *(pivot_hole_ptr as *const DebugT)
+        // );
+        ptr::copy_nonoverlapping(pivot, pivot_hole_ptr, 1);
+        mem::forget(pivot_guard);
+        // println!(
+        //     "sP: {scratch_as_x:?} pos: {}",
+        //     pivot_hole_ptr.sub_ptr(scratch_ptr)
+        // );
+
+        // Copy the elements that were less than from scratch into v.
+        let mut out_ptr = arr_ptr;
+        ptr::copy_nonoverlapping(scratch_ptr, out_ptr, a1_b1_lt_len);
+        out_ptr = out_ptr.add(a1_b1_lt_len);
+        // println!("v1: {v_as_x:?}");
+
+        ptr::copy_nonoverlapping(scratch_ptr.add(len_div_2), out_ptr, a2_b2_lt_len);
+        out_ptr = out_ptr.add(a2_b2_lt_len);
+        // println!("v2: {v_as_x:?}");
+
+        if c_elem_lt {
+            ptr::copy_nonoverlapping(c_elem_ptr, out_ptr, 1);
+            out_ptr = out_ptr.add(1);
+        }
+
+        let lt_len = out_ptr.sub_ptr(v.as_ptr());
+
+        // Copy the elements that were equal or more from scratch into v and reverse them.
+        // TODO maybe loop fusion here for the common part of 1 and 2.
+        let mut a1_b1_ge_ptr = scratch_ptr.add(len_div_2 - 1);
+        while a1_b1_ge_ptr >= b1_lt_out_ptr {
+            // TODO bench !=
+            // TODO is a for i loop better?
+
+            ptr::copy_nonoverlapping(a1_b1_ge_ptr, out_ptr, 1);
+            out_ptr = out_ptr.add(1);
+            a1_b1_ge_ptr = a1_b1_ge_ptr.sub(1);
+        }
+        // println!("v3: {v_as_x:?}");
+
+        let mut a2_b2_ge_ptr = scratch_ptr.add(even_len - 1);
+        while a2_b2_ge_ptr >= b2_lt_out_ptr {
+            // TODO is a for i loop better?
+            // assert!(out_ptr.sub_ptr(arr_ptr) < len);
+            // println!(
+            //     "copying {}, pos {} -> {}",
+            //     *(a2_b2_ge_ptr as *const DebugT),
+            //     a2_b2_ge_ptr.sub_ptr(scratch_ptr),
+            //     out_ptr.sub_ptr(arr_ptr)
+            // );
+
+            ptr::copy_nonoverlapping(a2_b2_ge_ptr, out_ptr, 1);
+            out_ptr = out_ptr.add(1);
+            a2_b2_ge_ptr = a2_b2_ge_ptr.sub(1);
+        }
+        // println!("v4: {v_as_x:?}");
+
+        lt_len
+    }
+}
+
+// It's crucial that pivot_hole will be copied back to the input if any comparison in the
+// loop panics. Because it could have changed due to interior mutability.
+struct PivotGuard<T> {
+    value: ManuallyDrop<T>,
+    hole: *mut T,
+}
+
+impl<T> Drop for PivotGuard<T> {
+    fn drop(&mut self) {
+        unsafe {
+            ptr::copy_nonoverlapping(&*self.value, self.hole, 1);
+        }
+    }
+}
+
+/// Partitions `v` into elements smaller than `pivot`, followed by elements
+/// greater than or equal to `pivot`.
+///
+/// Returns the number of elements smaller than `pivot`.
+fn stable_partition_simple<T, F>(
     v: &mut [T],
     scratch: &mut [MaybeUninit<T>],
     pivot_pos: usize,
@@ -212,21 +557,6 @@ where
     unsafe {
         assert!(scratch.len() >= len);
         let buf = MaybeUninit::slice_as_mut_ptr(scratch);
-
-        // It's crucial that pivot_hole will be copied back to the input if any comparison in the
-        // loop panics. Because it could have changed due to interior mutability.
-        struct PivotGuard<T> {
-            value: ManuallyDrop<T>,
-            hole: *mut T,
-        }
-
-        impl<T> Drop for PivotGuard<T> {
-            fn drop(&mut self) {
-                unsafe {
-                    ptr::copy_nonoverlapping(&*self.value, self.hole, 1);
-                }
-            }
-        }
 
         let pivot = PivotGuard {
             value: ManuallyDrop::new(ptr::read(&v[pivot_pos])),
@@ -266,7 +596,7 @@ where
 
         // Move pivot into its correct position.
         ptr::copy_nonoverlapping(&*pivot.value, pivot_partioned_ptr, 1);
-        core::mem::forget(pivot);
+        mem::forget(pivot);
 
         // Copy all the elements that were not equal directly from swap to v.
         ptr::copy_nonoverlapping(buf, arr, l_count);
