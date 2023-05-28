@@ -1,4 +1,3 @@
-use core::cmp;
 use core::mem::MaybeUninit;
 
 use crate::DriftsortRun;
@@ -112,7 +111,7 @@ pub fn sort<T, F: FnMut(&T, &T) -> bool>(
 ) {
     // What's the smallest possible sub-slice that is considered a already sorted run and used for
     // merging.
-    const MIN_MERGE_SLICE_LEN: usize = 16;
+    const MIN_MERGE_SLICE_LEN: usize = 32;
 
     let len = v.len();
     if len < 2 {
@@ -121,7 +120,11 @@ pub fn sort<T, F: FnMut(&T, &T) -> bool>(
 
     let scale_factor = merge_tree_scale_factor(len);
 
-    let min_good_run_len = cmp::max(sqrt_approx(len), MIN_MERGE_SLICE_LEN);
+    let min_good_run_len = if len <= (MIN_MERGE_SLICE_LEN * MIN_MERGE_SLICE_LEN) {
+        MIN_MERGE_SLICE_LEN
+    } else {
+        sqrt_approx(len)
+    };
 
     // (stack_len, runs, desired_depths) together form a stack maintaining run
     // information for the powersort heuristic. desired_depths[i] is the desired
