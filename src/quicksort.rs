@@ -1,5 +1,5 @@
 use core::intrinsics;
-use core::mem::{ManuallyDrop, MaybeUninit};
+use core::mem::{self, ManuallyDrop, MaybeUninit};
 use core::ptr;
 
 use crate::has_direct_interior_mutability;
@@ -244,12 +244,21 @@ where
 
             let elem_ptr = arr_ptr.add(i);
             let is_less_than_pivot = is_less(&*elem_ptr, pivot);
-            let dst = if is_less_than_pivot {
-                scratch_ptr.add(lt_count)
+
+            // Benchmarks show that especially on apple-m1 for anything at most the size of a u64
+            // double storing is more efficient than conditional store. It is also less at risk of
+            // having the compiler generating a branch instead of conditional store.
+            if const { mem::size_of::<T>() <= mem::size_of::<usize>() } {
+                ptr::copy_nonoverlapping(elem_ptr, scratch_ptr.add(lt_count), 1);
+                ptr::copy_nonoverlapping(elem_ptr, ge_out_ptr.add(lt_count), 1);
             } else {
-                ge_out_ptr.add(lt_count)
-            };
-            ptr::copy_nonoverlapping(elem_ptr, dst, 1);
+                let dst = if is_less_than_pivot {
+                    scratch_ptr
+                } else {
+                    ge_out_ptr
+                };
+                ptr::copy_nonoverlapping(elem_ptr, dst.add(lt_count), 1);
+            }
 
             lt_count += is_less_than_pivot as usize;
         }
