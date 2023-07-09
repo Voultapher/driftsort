@@ -200,7 +200,7 @@ where
     let len = v.len();
     let arr_ptr = v.as_mut_ptr();
 
-    if core::intrinsics::unlikely(scratch.len() < len || pivot_pos >= len) {
+    if intrinsics::unlikely(scratch.len() < len || pivot_pos >= len) {
         debug_assert!(false); // That's a logic bug in the implementation.
         return 0;
     }
@@ -217,8 +217,10 @@ where
     unsafe {
         let scratch_ptr = MaybeUninit::slice_as_mut_ptr(scratch);
 
+        let original_pivot_elem_ptr = &v[pivot_pos] as *const T;
+
         let pivot_guard = PivotGuard {
-            value: ManuallyDrop::new(ptr::read(&v[pivot_pos])),
+            value: ManuallyDrop::new(ptr::read(original_pivot_elem_ptr)),
             hole: arr_ptr.add(pivot_pos),
         };
         let pivot: &T = &pivot_guard.value;
@@ -228,13 +230,18 @@ where
         // lt == less than, ge == greater or equal
         let mut lt_count = 0;
         let mut ge_out_ptr = scratch_ptr.add(len);
-        for i in 0..len {
-            ge_out_ptr = ge_out_ptr.sub(1);
 
-            if const { crate::has_direct_interior_mutability::<T>() } {
+        macro_rules! loop_body {
+            ($elem_ptr:expr) => {
+                ge_out_ptr = ge_out_ptr.sub(1);
+
+                let elem_ptr = $elem_ptr;
+
                 //  This is required to
                 // handle types with interior mutability. See comment above for more info.
-                if intrinsics::unlikely(i == pivot_pos) {
+                if const { crate::has_direct_interior_mutability::<T>() }
+                    && intrinsics::unlikely(elem_ptr as *const T == original_pivot_elem_ptr)
+                {
                     // We move the pivot in its correct place later.
                     if is_less(pivot, pivot) {
                         pivot_out_ptr = scratch_ptr.add(lt_count);
@@ -242,29 +249,45 @@ where
                     } else {
                         pivot_out_ptr = ge_out_ptr.add(lt_count);
                     }
-                    continue;
-                }
-            }
-
-            let elem_ptr = arr_ptr.add(i);
-            let is_less_than_pivot = is_less(&*elem_ptr, pivot);
-
-            // Benchmarks show that especially on apple-m1 for anything at most the size of a u64
-            // double storing is more efficient than conditional store. It is also less at risk of
-            // having the compiler generating a branch instead of conditional store.
-            if const { mem::size_of::<T>() <= mem::size_of::<usize>() } {
-                ptr::copy_nonoverlapping(elem_ptr, scratch_ptr.add(lt_count), 1);
-                ptr::copy_nonoverlapping(elem_ptr, ge_out_ptr.add(lt_count), 1);
-            } else {
-                let dst = if is_less_than_pivot {
-                    scratch_ptr
                 } else {
-                    ge_out_ptr
-                };
-                ptr::copy_nonoverlapping(elem_ptr, dst.add(lt_count), 1);
-            }
+                    let is_less_than_pivot = is_less(&*elem_ptr, pivot);
 
-            lt_count += is_less_than_pivot as usize;
+                    // Benchmarks show that especially on Firestorm (apple-m1) for anything at most
+                    // the size of a u64 double storing is more efficient than conditional store. It
+                    // is also less at risk of having the compiler generating a branch instead of
+                    // conditional store.
+                    if const { mem::size_of::<T>() <= mem::size_of::<usize>() } {
+                        ptr::copy_nonoverlapping(elem_ptr, scratch_ptr.add(lt_count), 1);
+                        ptr::copy_nonoverlapping(elem_ptr, ge_out_ptr.add(lt_count), 1);
+                    } else {
+                        let dst_ptr = if is_less_than_pivot {
+                            scratch_ptr
+                        } else {
+                            ge_out_ptr
+                        };
+                        ptr::copy_nonoverlapping(elem_ptr, dst_ptr.add(lt_count), 1);
+                    }
+
+                    lt_count += is_less_than_pivot as usize;
+                }
+            };
+        }
+
+        // Loop manually unrolled to ensure good performance.
+        // Example T == u64, on x86 LLVM unrolls this loop but not on Arm.
+        // And it's very perf critical so this is done manually.
+        // And surprisingly this can yield better code-gen and perf than the auto-unroll.
+        let mut i: usize = 0;
+        let end = len.saturating_sub(1);
+
+        while i < end {
+            loop_body!(arr_ptr.add(i));
+            loop_body!(arr_ptr.add(i + 1));
+            i += 2;
+        }
+
+        if i != len {
+            loop_body!(arr_ptr.add(i));
         }
 
         // Now that any possible observation of pivot has happened we copy it.
