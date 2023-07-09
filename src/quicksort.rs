@@ -200,6 +200,11 @@ where
     let len = v.len();
     let arr_ptr = v.as_mut_ptr();
 
+    if core::intrinsics::unlikely(scratch.len() < len || pivot_pos >= len) {
+        debug_assert!(false); // That's a logic bug in the implementation.
+        return 0;
+    }
+
     // Inside the main partitioning loop we MUST NOT compare our stack copy of the pivot value with
     // the original value in the slice `v`. If we just write the value as pointed to by `src_ptr`
     // into `sctratch_ptr` as it was in the input slice `v` we would risk that the call to the
@@ -210,7 +215,6 @@ where
 
     // SAFETY: TODO
     unsafe {
-        assert!(scratch.len() >= len);
         let scratch_ptr = MaybeUninit::slice_as_mut_ptr(scratch);
 
         let pivot_guard = PivotGuard {
