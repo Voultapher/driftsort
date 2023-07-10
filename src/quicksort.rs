@@ -62,14 +62,17 @@ pub fn stable_quicksort<T, F>(
         let mut mid = 0;
 
         if !should_do_equal_partition {
-            mid = stable_partition(v, scratch, pivot, is_less);
+            mid = <T as StablePartitionTypeImpl>::stable_partition(v, scratch, pivot, is_less);
 
             // Fallback for non Freeze types.
             should_do_equal_partition = mid == 0;
         }
 
         if should_do_equal_partition {
-            let mid_eq = stable_partition(v, scratch, pivot, &mut |a, b| !is_less(b, a));
+            let mid_eq =
+                <T as StablePartitionTypeImpl>::stable_partition(v, scratch, pivot, &mut |a, b| {
+                    !is_less(b, a)
+                });
             v = &mut v[mid_eq..];
             ancestor_pivot = None;
             continue;
@@ -184,11 +187,38 @@ where
     }
 }
 
-/// Partitions `v` into elements smaller than `pivot`, followed by elements
-/// greater than or equal to `pivot`.
-///
-/// Returns the number of elements smaller than `pivot`.
-fn stable_partition<T, F>(
+// The manual unrolling required for good perf for integer like types has a big impact on debug
+// compile times. To limit unnecessary code-gen this is put into a trait.
+trait StablePartitionTypeImpl: Sized {
+    /// Partitions `v` into elements smaller than `pivot`, followed by elements
+    /// greater than or equal to `pivot`.
+    ///
+    /// Returns the number of elements smaller than `pivot`.
+    fn stable_partition<F>(
+        v: &mut [Self],
+        scratch: &mut [MaybeUninit<Self>],
+        pivot_pos: usize,
+        is_less: &mut F,
+    ) -> usize
+    where
+        F: FnMut(&Self, &Self) -> bool;
+}
+
+impl<T> StablePartitionTypeImpl for T {
+    default fn stable_partition<F>(
+        v: &mut [Self],
+        scratch: &mut [MaybeUninit<Self>],
+        pivot_pos: usize,
+        is_less: &mut F,
+    ) -> usize
+    where
+        F: FnMut(&Self, &Self) -> bool,
+    {
+        stable_partition_default(v, scratch, pivot_pos, is_less)
+    }
+}
+
+fn stable_partition_default<T, F>(
     v: &mut [T],
     scratch: &mut [MaybeUninit<T>],
     pivot_pos: usize,
@@ -231,64 +261,37 @@ where
         let mut lt_count = 0;
         let mut ge_out_ptr = scratch_ptr.add(len);
 
-        macro_rules! loop_body {
-            ($elem_ptr:expr) => {
-                ge_out_ptr = ge_out_ptr.sub(1);
+        for i in 0..len {
+            ge_out_ptr = ge_out_ptr.sub(1);
 
-                let elem_ptr = $elem_ptr;
+            let elem_ptr = arr_ptr.add(i);
 
-                //  This is required to
-                // handle types with interior mutability. See comment above for more info.
-                if const { crate::has_direct_interior_mutability::<T>() }
-                    && intrinsics::unlikely(elem_ptr as *const T == original_pivot_elem_ptr)
-                {
-                    // We move the pivot in its correct place later.
-                    if is_less(pivot, pivot) {
-                        pivot_out_ptr = scratch_ptr.add(lt_count);
-                        lt_count += 1;
-                    } else {
-                        pivot_out_ptr = ge_out_ptr.add(lt_count);
-                    }
+            //  This is required to
+            // handle types with interior mutability. See comment above for more info.
+            if const { crate::has_direct_interior_mutability::<T>() }
+                && intrinsics::unlikely(elem_ptr as *const T == original_pivot_elem_ptr)
+            {
+                // We move the pivot in its correct place later.
+                if is_less(pivot, pivot) {
+                    pivot_out_ptr = scratch_ptr.add(lt_count);
+                    lt_count += 1;
                 } else {
-                    let is_less_than_pivot = is_less(&*elem_ptr, pivot);
-
-                    // Benchmarks show that especially on Firestorm (apple-m1) for anything at most
-                    // the size of a u64 double storing is more efficient than conditional store. It
-                    // is also less at risk of having the compiler generating a branch instead of
-                    // conditional store.
-                    if const { mem::size_of::<T>() <= mem::size_of::<usize>() } {
-                        ptr::copy_nonoverlapping(elem_ptr, scratch_ptr.add(lt_count), 1);
-                        ptr::copy_nonoverlapping(elem_ptr, ge_out_ptr.add(lt_count), 1);
-                    } else {
-                        let dst_ptr = if is_less_than_pivot {
-                            scratch_ptr
-                        } else {
-                            ge_out_ptr
-                        };
-                        ptr::copy_nonoverlapping(elem_ptr, dst_ptr.add(lt_count), 1);
-                    }
-
-                    lt_count += is_less_than_pivot as usize;
+                    pivot_out_ptr = ge_out_ptr.add(lt_count);
                 }
-            };
-        }
+            } else {
+                let is_less_than_pivot = is_less(&*elem_ptr, pivot);
 
-        // Loop manually unrolled to ensure good performance.
-        // Example T == u64, on x86 LLVM unrolls this loop but not on Arm.
-        // And it's very perf critical so this is done manually.
-        // And surprisingly this can yield better code-gen and perf than the auto-unroll.
-        let mut i: usize = 0;
-        let end = len.saturating_sub(1);
+                let dst_ptr = if is_less_than_pivot {
+                    scratch_ptr
+                } else {
+                    ge_out_ptr
+                };
+                ptr::copy_nonoverlapping(elem_ptr, dst_ptr.add(lt_count), 1);
 
-        while i < end {
-            loop_body!(arr_ptr.add(i));
-            loop_body!(arr_ptr.add(i + 1));
-            i += 2;
+                lt_count += is_less_than_pivot as usize;
+            }
         }
-
-        if i != len {
-            loop_body!(arr_ptr.add(i));
-        }
+        // }
 
         // Now that any possible observation of pivot has happened we copy it.
         if const { has_direct_interior_mutability::<T>() } {
@@ -306,6 +309,89 @@ where
         }
 
         lt_count
+    }
+}
+
+impl<T: crate::Freeze + Copy> StablePartitionTypeImpl for T {
+    fn stable_partition<F>(
+        v: &mut [Self],
+        scratch: &mut [MaybeUninit<Self>],
+        pivot_pos: usize,
+        is_less: &mut F,
+    ) -> usize
+    where
+        F: FnMut(&Self, &Self) -> bool,
+    {
+        if const { mem::size_of::<T>() <= mem::size_of::<usize>() } {
+            let len = v.len();
+            let arr_ptr = v.as_mut_ptr();
+
+            if intrinsics::unlikely(scratch.len() < len || pivot_pos >= len) {
+                debug_assert!(false); // That's a logic bug in the implementation.
+                return 0;
+            }
+
+            // SAFETY: TODO
+            unsafe {
+                let pivot_value = ptr::read(&v[pivot_pos]);
+                let pivot: &T = &pivot_value;
+
+                let scratch_ptr = MaybeUninit::slice_as_mut_ptr(scratch);
+
+                // lt == less than, ge == greater or equal
+                let mut lt_count = 0;
+                let mut ge_out_ptr = scratch_ptr.add(len);
+
+                // Loop manually unrolled to ensure good performance.
+                // Example T == u64, on x86 LLVM unrolls this loop but not on Arm.
+                // And it's very perf critical so this is done manually.
+                // And surprisingly this can yield better code-gen and perf than the auto-unroll.
+                macro_rules! loop_body {
+                    ($elem_ptr:expr) => {
+                        ge_out_ptr = ge_out_ptr.sub(1);
+
+                        let elem_ptr = $elem_ptr;
+
+                        let is_less_than_pivot = is_less(&*elem_ptr, pivot);
+
+                        // Benchmarks show that especially on Firestorm (apple-m1) for anything at
+                        // most the size of a u64 double storing is more efficient than conditional
+                        // store. It is also less at risk of having the compiler generating a branch
+                        // instead of conditional store.
+                        ptr::copy_nonoverlapping(elem_ptr, scratch_ptr.add(lt_count), 1);
+                        ptr::copy_nonoverlapping(elem_ptr, ge_out_ptr.add(lt_count), 1);
+
+                        lt_count += is_less_than_pivot as usize;
+                    };
+                }
+
+                let mut i: usize = 0;
+                let end = len.saturating_sub(1);
+
+                while i < end {
+                    loop_body!(arr_ptr.add(i));
+                    loop_body!(arr_ptr.add(i + 1));
+                    i += 2;
+                }
+
+                if i != len {
+                    loop_body!(arr_ptr.add(i));
+                }
+
+                // Copy all the elements that were not equal directly from swap to v.
+                ptr::copy_nonoverlapping(scratch_ptr, arr_ptr, lt_count);
+
+                // Copy the elements that were equal or more from the buf into v and reverse them.
+                let rev_buf_ptr = scratch_ptr.add(len - 1);
+                for i in 0..len - lt_count {
+                    ptr::copy_nonoverlapping(rev_buf_ptr.sub(i), arr_ptr.add(lt_count + i), 1);
+                }
+
+                lt_count
+            }
+        } else {
+            stable_partition_default(v, scratch, pivot_pos, is_less)
+        }
     }
 }
 
