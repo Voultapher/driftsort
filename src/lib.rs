@@ -297,9 +297,15 @@ impl<T: Freeze> const IsFreeze for T {
 
 #[must_use]
 const fn has_direct_interior_mutability<T>() -> bool {
-    // - Can the type have interior mutability, this is checked by testing if T is Freeze.
-    //   If the type can have interior mutability it may alter itself during comparison in a way
-    //   that must be observed after the sort operation concludes.
-    //   Otherwise a type like Mutex<Option<Box<str>>> could lead to double free.
+    // Can the type have interior mutability, this is checked by testing if T is Freeze. If the type
+    // can have interior mutability it may alter itself during comparison in a way that must be
+    // observed after the sort operation concludes. Otherwise a type like Mutex<Option<Box<str>>>
+    // could lead to double free.
     !<T as IsFreeze>::value()
+}
+
+#[must_use]
+const fn is_int_like_type<T>() -> bool {
+    // A heuristic that guesses whether a type looks like an int for optimization purposes.
+    <T as IsFreeze>::value() && mem::size_of::<T>() <= mem::size_of::<u64>()
 }
