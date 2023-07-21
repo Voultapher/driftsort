@@ -145,7 +145,7 @@ impl<T: crate::Freeze> SmallSortTypeImpl for T {
             insertion_sort_shift_left(&mut v[0..len_div_2], 8, is_less);
             insertion_sort_shift_left(&mut v[len_div_2..], 8, is_less);
 
-            // SAFETY: We checked that T is Copy and thus observation safe. Should is_less panic v
+            // SAFETY: We checked that T is Freeze and thus observation safe. Should is_less panic v
             // was not modified in parity_merge and retains it's original input. swap and v must not
             // alias and swap has v.len() space.
             unsafe {
@@ -239,6 +239,7 @@ where
 #[inline(never)]
 unsafe fn sort8_stable<T, F>(arr_ptr: *mut T, scratch_ptr: *mut T, is_less: &mut F)
 where
+    T: crate::Freeze,
     F: FnMut(&T, &T) -> bool,
 {
     // SAFETY: The caller must guarantee that scratch_ptr is valid for 8 writes, and that arr_ptr is
@@ -248,7 +249,7 @@ where
         sort4_stable(arr_ptr.add(4), scratch_ptr.add(4), is_less);
     }
 
-    // SAFETY: We checked that T is Copy and thus observation safe.
+    // SAFETY: We checked that T is Freeze and thus observation safe.
     // Should is_less panic v was not modified in parity_merge and retains its original input.
     // swap and v must not alias and swap has v.len() space.
     unsafe {
@@ -359,8 +360,9 @@ where
 /// Original idea for bi-directional merging by Igor van den Hoven (quadsort), adapted to only use
 /// merge up and down. In contrast to the original parity_merge function, it performs 2 writes
 /// instead of 4 per iteration. Ord violation detection was added.
-pub unsafe fn bi_directional_merge_even<T, F>(v: &[T], dest_ptr: *mut T, is_less: &mut F)
+unsafe fn bi_directional_merge_even<T, F>(v: &[T], dest_ptr: *mut T, is_less: &mut F)
 where
+    T: crate::Freeze,
     F: FnMut(&T, &T) -> bool,
 {
     // SAFETY: the caller must guarantee that `dest_ptr` is valid for v.len() writes.
@@ -396,8 +398,6 @@ where
     //
     // Note, the pointers that have been written, are now one past where they were read and
     // copied. written == incremented or decremented + copy to dest.
-
-    assert!(const { !crate::has_direct_interior_mutability::<T>() });
 
     let len = v.len();
     let src_ptr = v.as_ptr();
