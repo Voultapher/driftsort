@@ -8,7 +8,8 @@
     const_trait_impl,
     inline_const,
     core_intrinsics,
-    sized_type_properties
+    sized_type_properties,
+    generic_const_exprs
 )]
 
 use core::cmp::{self, Ordering};
@@ -132,7 +133,7 @@ where
     let full_alloc_size = cmp::min(len, MAX_FULL_ALLOC_BYTES / mem::size_of::<T>());
     let alloc_size = cmp::max(len / 2, full_alloc_size);
 
-    let mut buf = <BufT as BufGuard<T>>::with_capacity(alloc_size);
+    let mut buf = BufT::with_capacity(alloc_size);
 
     let scratch_slice =
         unsafe { slice::from_raw_parts_mut(buf.mut_ptr() as *mut MaybeUninit<T>, buf.capacity()) };
@@ -304,8 +305,5 @@ const fn has_direct_interior_mutability<T>() -> bool {
     !<T as IsFreeze>::value()
 }
 
-#[must_use]
-const fn is_int_like_type<T>() -> bool {
-    // A heuristic that guesses whether a type looks like an int for optimization purposes.
-    <T as IsFreeze>::value() && mem::size_of::<T>() <= mem::size_of::<u64>()
-}
+trait IsTrue<const B: bool> {}
+impl IsTrue<true> for () {}
