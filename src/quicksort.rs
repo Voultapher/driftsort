@@ -1,4 +1,5 @@
-use core::mem::{ManuallyDrop, MaybeUninit};
+use core::intrinsics;
+use core::mem::{self, ManuallyDrop, MaybeUninit};
 use core::ptr;
 
 use crate::has_direct_interior_mutability;
@@ -61,14 +62,14 @@ pub fn stable_quicksort<T, F>(
         let mut mid = 0;
 
         if !should_do_equal_partition {
-            mid = stable_partition(v, scratch, pivot, is_less, false);
+            mid = stable_partition(v, scratch, pivot, is_less);
 
             // Fallback for non Freeze types.
             should_do_equal_partition = mid == 0;
         }
 
         if should_do_equal_partition {
-            let mid_eq = stable_partition(v, scratch, pivot, &mut |a, b| !is_less(b, a), true);
+            let mid_eq = stable_partition(v, scratch, pivot, &mut |a, b| !is_less(b, a));
             v = &mut v[mid_eq..];
             ancestor_pivot = None;
             continue;
@@ -92,7 +93,7 @@ pub fn stable_quicksort<T, F>(
     }
 }
 
-/// Selects a pivot from v. Algorithm taken from glidesort by Orson Peters.
+/// Selects a pivot from `v`. Algorithm taken from glidesort by Orson Peters.
 ///
 /// This chooses a pivot by sampling an adaptive amount of points, approximating
 /// the quality of a median of sqrt(n) elements.
@@ -102,7 +103,9 @@ where
 {
     let len = v.len();
 
-    // SAFETY: TODO
+    // SAFETY: The pointer operations are guaranteed to be in-bounds no matter the len of `v`. From
+    // which follows the calls to median3 and median3_rec are provided with pointers to valid
+    // elements and thus safe.
     unsafe {
         // We use unsafe code and raw pointers here because we're dealing with
         // heavy recursion. Passing safe slices around would involve a lot of
@@ -140,7 +143,7 @@ unsafe fn median3_rec<T, F>(
 where
     F: FnMut(&T, &T) -> bool,
 {
-    // SAFETY: TODO
+    // SAFETY: See function safety description.
     unsafe {
         if n * 8 >= PSEUDO_MEDIAN_REC_THRESHOLD {
             let n8 = n / 8;
@@ -183,100 +186,218 @@ where
     }
 }
 
-/// Partitions `v` into elements smaller than `pivot`, followed by elements
-/// greater than or equal to `pivot`.
+/// Takes the input slice `v` and re-arranges elements such that when the call returns normally
+/// all elements that compare true for `is_less(elem, pivot)` where `pivot == v[pivot_pos]` are
+/// on the left side of `v` followed by the other elements, notionally considered greater or
+/// equal to `pivot`.
 ///
-/// Returns the number of elements smaller than `pivot`.
+/// Returns the number of elements that are compared true for `is_less(elem, pivot)`.
+///
+/// If `is_less` does not implement a total order the resulting order and return value are
+/// unspecified. All original elements will remain in `v` and any possible modifications via
+/// interior mutability will be observable. Same is true if `is_less` panics or `v.len()`
+/// exceeds `scratch.len()`.
 fn stable_partition<T, F>(
     v: &mut [T],
     scratch: &mut [MaybeUninit<T>],
     pivot_pos: usize,
     is_less: &mut F,
-    pivot_goes_left: bool,
 ) -> usize
 where
     F: FnMut(&T, &T) -> bool,
 {
     let len = v.len();
-    let arr = v.as_mut_ptr();
+    let arr_ptr = v.as_mut_ptr();
 
-    // Inside the main partitioning loop we MUST NOT compare out stack copy of the pivot value with
-    // the original value in the slice `v`. If we just write the value as pointed to by `src` into
-    // `buf` as it was in the input slice `v` we would risk that the call to the user-provided
-    // `is_less` modifies the value pointed to by `src`. This could be UB for types such as
-    // `Mutex<Option<Box<String>>>` where during the comparison it replaces the box with None,
-    // leading to double free. As the value written back into `v` from `buf` did not observe that
-    // modification.
+    if intrinsics::unlikely(scratch.len() < len || pivot_pos >= len) {
+        debug_assert!(false); // That's a logic bug in the implementation.
+        return 0;
+    }
 
-    // SAFETY: TODO
+    let scratch_ptr = MaybeUninit::slice_as_mut_ptr(scratch);
+
+    // SAFETY: We checked that `pivot_pos` is in-bounds and that `scratch` is valid for `len`
+    // writes, fulfilling the safety contract of partition_fill_scratch. Assuming
+    // partition_fill_scratch works as documented `scratch` should hold valid elements that observed
+    // all possible changes to them, and can then be copied back into `v`.
     unsafe {
-        assert!(scratch.len() >= len);
-        let buf = MaybeUninit::slice_as_mut_ptr(scratch);
+        // We can just use the value inside the slice and avoid a drop guard around a stack copy
+        // of the value, because we only write into scratch during the scan loop. This
+        // simplifies the code and shows no perf difference.
+        let pivot_ptr = arr_ptr.add(pivot_pos);
 
-        // It's crucial that pivot_hole will be copied back to the input if any comparison in the
-        // loop panics. Because it could have changed due to interior mutability.
-        struct PivotGuard<T> {
-            value: ManuallyDrop<T>,
-            hole: *mut T,
-        }
-
-        impl<T> Drop for PivotGuard<T> {
-            fn drop(&mut self) {
-                unsafe {
-                    ptr::copy_nonoverlapping(&*self.value, self.hole, 1);
-                }
-            }
-        }
-
-        let pivot = PivotGuard {
-            value: ManuallyDrop::new(ptr::read(&v[pivot_pos])),
-            hole: arr.add(pivot_pos),
-        };
-
-        let mut pivot_partioned_ptr = ptr::null_mut();
-        let mut l_count = 0;
-        let mut reverse_out = buf.add(len);
-        for i in 0..len {
-            reverse_out = reverse_out.sub(1);
-
-            // This should only happen once and should be predicted very well. This is required to
-            // handle types with interior mutability. See comment above for more info.
-            if i == pivot_pos {
-                // We move the pivot in its correct place later.
-                if pivot_goes_left {
-                    pivot_partioned_ptr = buf.add(l_count);
-                    l_count += 1;
-                } else {
-                    pivot_partioned_ptr = reverse_out.add(l_count);
-                }
-                continue;
-            }
-
-            let src = arr.add(i);
-            let less_than_pivot = is_less(&*src, &pivot.value);
-            let dst = if less_than_pivot {
-                buf.add(l_count)
-            } else {
-                reverse_out.add(l_count)
-            };
-            ptr::copy_nonoverlapping(src, dst, 1);
-
-            l_count += less_than_pivot as usize;
-        }
-
-        // Move pivot into its correct position.
-        ptr::copy_nonoverlapping(&*pivot.value, pivot_partioned_ptr, 1);
-        core::mem::forget(pivot);
+        let lt_count = T::partition_fill_scratch(arr_ptr, len, scratch_ptr, pivot_ptr, is_less);
 
         // Copy all the elements that were not equal directly from swap to v.
-        ptr::copy_nonoverlapping(buf, arr, l_count);
+        ptr::copy_nonoverlapping(scratch_ptr, arr_ptr, lt_count);
 
         // Copy the elements that were equal or more from the buf into v and reverse them.
-        let rev_buf_ptr = buf.add(len - 1);
-        for i in 0..len - l_count {
-            ptr::copy_nonoverlapping(rev_buf_ptr.sub(i), arr.add(l_count + i), 1);
+        let rev_buf_ptr = scratch_ptr.add(len - 1);
+        for i in 0..len - lt_count {
+            ptr::copy_nonoverlapping(rev_buf_ptr.sub(i), arr_ptr.add(lt_count + i), 1);
         }
 
-        l_count
+        lt_count
+    }
+}
+
+trait StablePartitionTypeImpl: Sized {
+    /// Takes a slice of `len` pointed to by `arr_ptr` and fills `scratch_ptr` with a partitioned
+    /// copy of the values according to `is_less`.
+    ///
+    /// Example [05162738] -> [01238765]
+    ///
+    /// SAFETY: The caller MUST ensure that `arr_ptr` points to a valid slice of `len` elements and
+    /// that `scratch_ptr` is valid for `len` writes.
+    unsafe fn partition_fill_scratch<F>(
+        arr_ptr: *mut Self,
+        len: usize,
+        scratch_ptr: *mut Self,
+        pivot_ptr: *const Self,
+        is_less: &mut F,
+    ) -> usize
+    where
+        F: FnMut(&Self, &Self) -> bool;
+}
+
+impl<T> StablePartitionTypeImpl for T {
+    /// See [`StablePartitionTypeImpl::partition_fill_scratch`].
+    default unsafe fn partition_fill_scratch<F>(
+        arr_ptr: *mut Self,
+        len: usize,
+        scratch_ptr: *mut Self,
+        pivot_ptr: *const Self,
+        is_less: &mut F,
+    ) -> usize
+    where
+        F: FnMut(&Self, &Self) -> bool,
+    {
+        // We need to take special care of types with interior mutability. `is_less` can modify the
+        // values it is provided. For example if `pivot_ptr` points to an element in the middle. A
+        // copy of the backing element would be written into the scratch space, and later
+        // modifications to the element behind `pivot_ptr` would be missed by subsequent calls to
+        // `is_less(&*elem_ptr, &*pivot_ptr)`. This can quickly lead to UB, e.g.
+        // `Mutex<Option<Box<String>>>` could miss an update where the `Option` is set to `None`
+        // which would cause a double free.
+
+        // SAFETY: The element access is arr_ptr + i, where i < len, which makes it proven
+        // in-bounds, assuming the caller upholds the function safety contract. The two output
+        // pointers `scratch_ptr` and `ge_out_ptr` each point to a unique location within the range
+        // of `scratch_ptr`, and the combination of always doing decrementing `ge_out_ptr` and
+        // conditionally incrementing `lt_count` ensures that every location of `scratch_ptr` will
+        // be written. If `is_less` panics, only un-observed copies were written into the scratch
+        // space.
+        unsafe {
+            let mut pivot_out_ptr = ptr::null_mut();
+
+            // lt == less than, ge == greater or equal
+            let mut lt_count = 0;
+            let mut ge_out_ptr = scratch_ptr.add(len);
+
+            for i in 0..len {
+                let elem_ptr = arr_ptr.add(i);
+                ge_out_ptr = ge_out_ptr.sub(1);
+
+                let is_less_than_pivot = is_less(&*elem_ptr, &*pivot_ptr);
+
+                let dst_ptr_base = if is_less_than_pivot {
+                    scratch_ptr
+                } else {
+                    ge_out_ptr
+                };
+                let dst_ptr = dst_ptr_base.add(lt_count);
+
+                ptr::copy_nonoverlapping(elem_ptr, dst_ptr, 1);
+
+                if const { crate::has_direct_interior_mutability::<T>() }
+                    && intrinsics::unlikely(elem_ptr as *const T == pivot_ptr)
+                {
+                    pivot_out_ptr = dst_ptr;
+                }
+
+                lt_count += is_less_than_pivot as usize;
+            }
+
+            if const { crate::has_direct_interior_mutability::<T>() } {
+                ptr::copy_nonoverlapping(pivot_ptr, pivot_out_ptr, 1);
+            }
+
+            lt_count
+        }
+    }
+}
+
+/// Specialization for int like types.
+impl<T> StablePartitionTypeImpl for T
+where
+    T: crate::Freeze + Copy,
+    (): crate::IsTrue<{ mem::size_of::<T>() <= (mem::size_of::<u64>() * 2) }>,
+{
+    /// See [`StablePartitionTypeImpl::partition_fill_scratch`].
+    unsafe fn partition_fill_scratch<F>(
+        arr_ptr: *mut Self,
+        len: usize,
+        scratch_ptr: *mut Self,
+        pivot_ptr: *const Self,
+        is_less: &mut F,
+    ) -> usize
+    where
+        F: FnMut(&Self, &Self) -> bool,
+    {
+        // Partitioning loop manually unrolled to ensure good performance. Example T == u64, on x86
+        // LLVM unrolls this loop but not on Arm. A compile time fixed size loop as based on
+        // `unroll_len` is reliably unrolled by all backends. And if `unroll_len` is `1` the inner
+        // loop can trivially be removed.
+        //
+        // The scheme used to unroll is somewhat weird, and focused on avoiding multi-instantiation
+        // of the inner loop part, which can have large effects on compile-time for non integer like
+        // types.
+        //
+        // Benchmarks show that for any Type of at most 16 bytes, double storing is more efficient
+        // than conditional store, especially on Firestorm (apple-m1). It is also less at risk of
+        // having the compiler generating a branch instead of conditional store.
+
+        // SAFETY: The element access is arr_ptr + i, where i < len, which makes it proven
+        // in-bounds, assuming the caller upholds the function safety contract. The two output
+        // pointers `scratch_ptr` and `ge_out_ptr` each point to a unique location within the range
+        // of `scratch_ptr`, and the combination of always doing decrementing `ge_out_ptr` and
+        // conditionally incrementing `lt_count` ensures that every location of `scratch_ptr` will
+        // be written. If `is_less` panics, only un-observed copies were written into the scratch
+        // space.
+        unsafe {
+            const UNROLL_LEN: usize = 4;
+
+            // lt == less than, ge == greater or equal
+            let mut lt_count = 0;
+            let mut ge_out_ptr = scratch_ptr.add(len);
+
+            macro_rules! loop_body {
+                ($elem_ptr:expr) => {
+                    let elem_ptr = $elem_ptr;
+                    ge_out_ptr = ge_out_ptr.sub(1);
+
+                    let is_less_than_pivot = is_less(&*elem_ptr, &*pivot_ptr);
+
+                    ptr::copy_nonoverlapping(elem_ptr, scratch_ptr.add(lt_count), 1);
+                    ptr::copy_nonoverlapping(elem_ptr, ge_out_ptr.add(lt_count), 1);
+
+                    lt_count += is_less_than_pivot as usize;
+                };
+            }
+
+            let mut offset = 0;
+            for _ in 0..(len / UNROLL_LEN) {
+                for unroll_i in 0..UNROLL_LEN {
+                    loop_body!(arr_ptr.add(offset + unroll_i));
+                }
+                offset += UNROLL_LEN;
+            }
+
+            for i in 0..(len % UNROLL_LEN) {
+                loop_body!(arr_ptr.add(offset + i));
+            }
+
+            lt_count
+        }
     }
 }

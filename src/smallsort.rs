@@ -6,7 +6,7 @@ pub fn sort_small<T, F>(v: &mut [T], is_less: &mut F)
 where
     F: FnMut(&T, &T) -> bool,
 {
-    <T as SmallSortTypeImpl>::small_sort(v, is_less);
+    T::small_sort(v, is_less);
 }
 
 // When dropped, copies from `src` into `dest`.

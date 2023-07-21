@@ -8,7 +8,8 @@
     const_trait_impl,
     inline_const,
     core_intrinsics,
-    sized_type_properties
+    sized_type_properties,
+    generic_const_exprs
 )]
 
 use core::cmp::{self, Ordering};
@@ -132,7 +133,7 @@ where
     let full_alloc_size = cmp::min(len, MAX_FULL_ALLOC_BYTES / mem::size_of::<T>());
     let alloc_size = cmp::max(len / 2, full_alloc_size);
 
-    let mut buf = <BufT as BufGuard<T>>::with_capacity(alloc_size);
+    let mut buf = BufT::with_capacity(alloc_size);
 
     let scratch_slice =
         unsafe { slice::from_raw_parts_mut(buf.mut_ptr() as *mut MaybeUninit<T>, buf.capacity()) };
@@ -297,9 +298,12 @@ impl<T: Freeze> const IsFreeze for T {
 
 #[must_use]
 const fn has_direct_interior_mutability<T>() -> bool {
-    // - Can the type have interior mutability, this is checked by testing if T is Freeze.
-    //   If the type can have interior mutability it may alter itself during comparison in a way
-    //   that must be observed after the sort operation concludes.
-    //   Otherwise a type like Mutex<Option<Box<str>>> could lead to double free.
+    // Can the type have interior mutability, this is checked by testing if T is Freeze. If the type
+    // can have interior mutability it may alter itself during comparison in a way that must be
+    // observed after the sort operation concludes. Otherwise a type like Mutex<Option<Box<str>>>
+    // could lead to double free.
     !<T as IsFreeze>::value()
 }
+
+trait IsTrue<const B: bool> {}
+impl IsTrue<true> for () {}
