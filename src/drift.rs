@@ -11,15 +11,12 @@ fn logical_merge<T, F: FnMut(&T, &T) -> bool>(
     right: DriftsortRun,
     is_less: &mut F,
 ) -> DriftsortRun {
-    // If one or both of the runs are sorted do a physical merge. Using quicksort to sort the
-    // unsorted run if present.
-
+    // If one or both of the runs are sorted do a physical merge, using
+    // quicksort to sort the unsorted run if present. We also *need* to
+    // physically merge if the combined runs would not fit in the scratch space
+    // anymore (as this would mean we are no longer able to to quicksort them).
     let len = v.len();
-
-    // We *need* to physically merge if the combined runs do not fit in the scratch space anymore
-    // (as this would mean we are no longer able to to quicksort them).
     let can_fit_in_scratch = len <= scratch.len();
-
     if !can_fit_in_scratch || left.sorted() || right.sorted() {
         if !left.sorted() {
             crate::stable_quicksort(&mut v[..left.len()], scratch, is_less);
@@ -27,7 +24,6 @@ fn logical_merge<T, F: FnMut(&T, &T) -> bool>(
         if !right.sorted() {
             crate::stable_quicksort(&mut v[left.len()..], scratch, is_less);
         }
-
         crate::physical_merge(v, scratch, left.len(), is_less);
 
         DriftsortRun::new_sorted(len)
@@ -109,20 +105,19 @@ pub fn sort<T, F: FnMut(&T, &T) -> bool>(
     eager_sort: bool,
     is_less: &mut F,
 ) {
-    // What's the smallest possible sub-slice that is considered a already sorted run and used for
-    // merging.
-    const MIN_MERGE_SLICE_LEN: usize = 32;
-
     let len = v.len();
     if len < 2 {
         return; // Removing this length check *increases* code size.
     }
-
     let scale_factor = merge_tree_scale_factor(len);
 
     // It's important to have a relatively high entry barrier for pre-sorted
     // runs, as the presence of a single such run will force on average several
-    // merge operations and shrink the maximum quicksort size a lot.
+    // merge operations and shrink the maximum quicksort size a lot. For that
+    // reason we use sqrt(len) as our pre-sorted run threshold, but no smaller
+    // than 32. When eagerly sorting we use crate::quicksort::SMALL_SORT_THRESHOLD
+    // as our threshold, as we will call small_sort on any runs smaller than this.
+    const MIN_MERGE_SLICE_LEN: usize = 32;
     let min_good_run_len = if eager_sort {
         crate::quicksort::SMALL_SORT_THRESHOLD
     } else if len <= (MIN_MERGE_SLICE_LEN * MIN_MERGE_SLICE_LEN) {
