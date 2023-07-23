@@ -22,8 +22,6 @@ mod merge;
 mod quicksort;
 mod smallsort;
 
-const FALLBACK_RUN_LEN: usize = 10;
-
 /// Compactly stores the length of a run, and whether or not it is sorted. This
 /// can always fit in a usize because the maximum slice length is isize::MAX.
 #[derive(Copy, Clone)]
@@ -72,36 +70,24 @@ where
     F: FnMut(&T, &T) -> bool,
     BufT: BufGuard<T>,
 {
-    // Sorting has no meaningful behavior on zero-sized types.
+    // Arrays of zero-sized types are always all-equal, and thus sorted.
     if T::IS_ZST {
         return;
     }
 
+    // Instrumenting the standard library showed that 90+% of the calls to sort
+    // by rustc are either of size 0 or 1.
     let len = v.len();
-
-    // This path is critical for very small inputs. Always pick insertion sort for these inputs,
-    // without any other analysis. This is perf critical for small inputs, in cold code.
-    const MAX_LEN_ALWAYS_INSERTION_SORT: usize = 20;
-
-    // Instrumenting the standard library showed that 90+% of the calls to sort by rustc are either
-    // of size 0 or 1. Make this path extra fast by assuming the branch is likely.
     if intrinsics::likely(len < 2) {
         return;
     }
 
-    // It's important to differentiate between small-sort performance for small slices and
-    // small-sort performance sorting small sub-slices as part of the main quicksort loop. For the
-    // former, testing showed that the representative benchmarks for real-world performance are cold
-    // CPU state and not single-size hot benchmarks. For the latter the CPU will call them many
-    // times, so hot benchmarks are fine and more realistic. And it's worth it to optimize sorting
-    // small sub-slices with more sophisticated solutions than insertion sort.
-
+    // More advanced sorting methods than insertion sort are faster if called in
+    // a hot loop for small inputs, but for general-purpose code the small
+    // codesize of insertion sort is more important.
+    const MAX_LEN_ALWAYS_INSERTION_SORT: usize = 20;
     if intrinsics::likely(len <= MAX_LEN_ALWAYS_INSERTION_SORT) {
-        // More specialized and faster options, extending the range of allocation free sorting
-        // are possible but come at a great cost of additional code, which is problematic for
-        // compile-times.
         smallsort::insertion_sort_shift_left(v, 1, is_less);
-
         return;
     }
 
@@ -114,27 +100,18 @@ where
     F: FnMut(&T, &T) -> bool,
     BufT: BufGuard<T>,
 {
-    // Allocating len instead of len / 2 allows the quicksort to work on the full size, which can
-    // give speedups especially for low cardinality inputs where common values are filtered out only
-    // once, instead of twice. And it allows bi-directional merging the full input. However to
-    // reduce peak memory usage for large inputs, fall back to allocating len / 2 if a certain
-    // threshold is passed.
-    const MAX_FULL_ALLOC_BYTES: usize = 8_000_000; // 8MB
-
-    let len = v.len();
-
     // Pick whichever is greater:
-    //
-    //  - alloc n up to MAX_FULL_ALLOC_BYTES
-    //  - alloc n / 2
-    //
-    // This serves to make the impact and performance cliff when going above the threshold less
-    // severe than immediately switching to len / 2.
+    //  - alloc len elements up to MAX_FULL_ALLOC_BYTES
+    //  - alloc len / 2 elements
+    // This allows us to use the most performant algorithms for small-medium
+    // sized inputs while scaling down to len / 2 for larger inputs. We need at
+    // least len / 2 for our stable merging routine.
+    const MAX_FULL_ALLOC_BYTES: usize = 8_000_000;
+    let len = v.len();
     let full_alloc_size = cmp::min(len, MAX_FULL_ALLOC_BYTES / mem::size_of::<T>());
     let alloc_size = cmp::max(len / 2, full_alloc_size);
 
     let mut buf = BufT::with_capacity(alloc_size);
-
     let scratch_slice =
         unsafe { slice::from_raw_parts_mut(buf.mut_ptr() as *mut MaybeUninit<T>, buf.capacity()) };
 
@@ -163,84 +140,60 @@ fn stable_quicksort<T, F: FnMut(&T, &T) -> bool>(
     crate::quicksort::stable_quicksort(v, scratch, limit, None, is_less);
 }
 
-/// Create a new logical run, that is either sorted or unsorted.
+/// Create a new logical run, that is either sorted or unsorted, of at least
+/// length min_good_run_len (if possible). If eager_sort is true a sorted run
+/// is created if none long enough is found.
 fn create_run<T, F: FnMut(&T, &T) -> bool>(
     v: &mut [T],
-    mut min_good_run_len: usize,
+    min_good_run_len: usize,
     eager_sort: bool,
     is_less: &mut F,
 ) -> DriftsortRun {
-    // FIXME: run detection.
-
-    let len = v.len();
-
-    let (streak_end, was_reversed) = find_streak(v, is_less);
-
-    if eager_sort {
-        min_good_run_len = FALLBACK_RUN_LEN;
-    }
-
-    // It's important to have a relatively high entry barrier for pre-sorted runs, as the presence
-    // of a single such run will force on average several merge operations and shrink the max
-    // quicksort size a lot. Which impact low-cardinality filtering performance.
-    if streak_end >= min_good_run_len {
+    let (run_len, was_reversed) = find_existing_run(v, is_less);
+    if run_len >= min_good_run_len {
         if was_reversed {
-            v[..streak_end].reverse();
+            v[..run_len].reverse();
         }
-
-        DriftsortRun::new_sorted(streak_end)
+        DriftsortRun::new_sorted(run_len)
     } else {
-        if !eager_sort {
-            // min_good_run_len serves dual duty here, if no streak was found, create a relatively
-            // large unsorted run to avoid calling find_streak all the time. This also puts a limit
-            // on how many logical merges have to be done, but this plays a minor role performance
-            // wise.
-            DriftsortRun::new_unsorted(cmp::min(min_good_run_len, len))
+        let new_run_len = cmp::min(min_good_run_len, v.len());
+        if eager_sort {
+            smallsort::sort_small(&mut v[..new_run_len], is_less);
+            DriftsortRun::new_sorted(new_run_len)
         } else {
-            // We are not allowed to generate unsorted sequences in this mode. This mode is used as
-            // fallback algorithm for quicksort. Essentially falling back to merge sort.
-            let run_end = cmp::min(crate::quicksort::SMALL_SORT_THRESHOLD, len);
-            smallsort::sort_small(&mut v[..run_end], is_less);
-
-            DriftsortRun::new_sorted(run_end)
+            DriftsortRun::new_unsorted(new_run_len)
         }
     }
 }
 
-/// Finds a streak of presorted elements starting at the beginning of the slice. Returns the first
-/// value that is not part of said streak, and a bool denoting wether the streak was reversed.
-/// Streaks can be increasing or decreasing.
-fn find_streak<T, F>(v: &[T], is_less: &mut F) -> (usize, bool)
+/// Finds a run of sorted elements starting at the beginning of the slice.
+/// Returns the length of the run, and a bool that is false when the run
+/// is ascending, and true if the run strictly descending.
+fn find_existing_run<T, F>(v: &[T], is_less: &mut F) -> (usize, bool)
 where
     F: FnMut(&T, &T) -> bool,
 {
     let len = v.len();
-
     if len < 2 {
         return (len, false);
     }
 
-    let mut end = 2;
-
-    // SAFETY: See below specific.
     unsafe {
         // SAFETY: We checked that len >= 2, so 0 and 1 are valid indices.
-        let assume_reverse = is_less(v.get_unchecked(1), v.get_unchecked(0));
-
-        // SAFETY: We know end >= 2 and check end < len.
-        // From that follows that accessing v at end and end - 1 is safe.
-        if assume_reverse {
-            while end < len && is_less(v.get_unchecked(end), v.get_unchecked(end - 1)) {
-                end += 1;
+        // This also means that run_len < len implies run_len and
+        // run_len - 1 are valid indices as well.
+        let mut run_len = 2;
+        let strictly_descending = is_less(v.get_unchecked(1), v.get_unchecked(0));
+        if strictly_descending {
+            while run_len < len && is_less(v.get_unchecked(run_len), v.get_unchecked(run_len - 1)) {
+                run_len += 1;
             }
-
-            (end, true)
         } else {
-            while end < len && !is_less(v.get_unchecked(end), v.get_unchecked(end - 1)) {
-                end += 1;
+            while run_len < len && !is_less(v.get_unchecked(run_len), v.get_unchecked(run_len - 1)) {
+                run_len += 1;
             }
-            (end, false)
         }
+        (run_len, strictly_descending)
     }
 }
 

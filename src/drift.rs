@@ -120,7 +120,12 @@ pub fn sort<T, F: FnMut(&T, &T) -> bool>(
 
     let scale_factor = merge_tree_scale_factor(len);
 
-    let min_good_run_len = if len <= (MIN_MERGE_SLICE_LEN * MIN_MERGE_SLICE_LEN) {
+    // It's important to have a relatively high entry barrier for pre-sorted
+    // runs, as the presence of a single such run will force on average several
+    // merge operations and shrink the maximum quicksort size a lot.
+    let min_good_run_len = if eager_sort {
+        crate::quicksort::SMALL_SORT_THRESHOLD
+    } else if len <= (MIN_MERGE_SLICE_LEN * MIN_MERGE_SLICE_LEN) {
         MIN_MERGE_SLICE_LEN
     } else {
         sqrt_approx(len)
