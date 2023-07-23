@@ -1,6 +1,13 @@
 use core::mem::{self, ManuallyDrop, MaybeUninit};
 use core::ptr;
 
+// It's important to differentiate between small-sort performance for small slices and
+// small-sort performance sorting small sub-slices as part of the main quicksort loop. For the
+// former, testing showed that the representative benchmarks for real-world performance are cold
+// CPU state and not single-size hot benchmarks. For the latter the CPU will call them many
+// times, so hot benchmarks are fine and more realistic. And it's worth it to optimize sorting
+// small sub-slices with more sophisticated solutions than insertion sort.
+
 /// Sorts `v` using strategies optimized for small sizes.
 pub fn sort_small<T, F>(v: &mut [T], is_less: &mut F)
 where
