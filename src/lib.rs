@@ -84,7 +84,10 @@ where
 
     // More advanced sorting methods than insertion sort are faster if called in
     // a hot loop for small inputs, but for general-purpose code the small
-    // codesize of insertion sort is more important.
+    // binary size of insertion sort is more important. The instruction cache in
+    // modern processors is very valuable, and for a single sort call in general
+    // purpose code any gains from an advanced method are cancelled by icache
+    // misses during the sort, and thrashing the icache for surrounding code.
     const MAX_LEN_ALWAYS_INSERTION_SORT: usize = 20;
     if intrinsics::likely(len <= MAX_LEN_ALWAYS_INSERTION_SORT) {
         smallsort::insertion_sort_shift_left(v, 1, is_less);
@@ -140,9 +143,12 @@ fn stable_quicksort<T, F: FnMut(&T, &T) -> bool>(
     crate::quicksort::stable_quicksort(v, scratch, limit, None, is_less);
 }
 
-/// Create a new logical run, that is either sorted or unsorted, of at least
-/// length min_good_run_len (if possible). If eager_sort is true a sorted run
-/// is created if none long enough is found.
+/// Creates a new logical run.
+///
+/// A logical run can either be sorted or unsorted. If there is a pre-existing
+/// run of length min_good_run_len (or longer) starting at v[0] we find and
+/// return it, otherwise we return a run of length min_good_run_len that is
+/// eagerly sorted when eager_sort is true, and left unsorted otherwise.
 fn create_run<T, F: FnMut(&T, &T) -> bool>(
     v: &mut [T],
     min_good_run_len: usize,
@@ -167,6 +173,7 @@ fn create_run<T, F: FnMut(&T, &T) -> bool>(
 }
 
 /// Finds a run of sorted elements starting at the beginning of the slice.
+///
 /// Returns the length of the run, and a bool that is false when the run
 /// is ascending, and true if the run strictly descending.
 fn find_existing_run<T, F>(v: &[T], is_less: &mut F) -> (usize, bool)

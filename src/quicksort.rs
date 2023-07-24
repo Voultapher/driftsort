@@ -48,7 +48,8 @@ pub fn stable_quicksort<T, F>(
         // distinct values, a strategy borrowed from pdqsort. For types with
         // interior mutability we can't soundly create a temporary copy of the
         // ancestor pivot, and use left_partition_len == 0 as our method for
-        // detecting when we re-use a pivot.
+        // detecting when we re-use a pivot, which means we do at most three
+        // partition operations with pivot p instead of the optimal two.
         let mut perform_equal_partition = false;
         if let Some(la_pivot) = left_ancestor_pivot {
             perform_equal_partition = !is_less(la_pivot, &v[pivot_idx]);
@@ -85,15 +86,17 @@ where
     // We use unsafe code and raw pointers here because we're dealing with
     // heavy recursion. Passing safe slices around would involve a lot of
     // branches and function call overhead.
+    
+    // SAFETY: a, b, c point to initialized regions of len_div_8 elements,
+    // satisfying median3 and median3_rec's preconditions as arr_ptr points
+    // to an initialized region of n = len elements.
     unsafe {
-        // SAFETY: a, b, c point to initialized regions of len_div_8 elements,
-        // satisfying median3 and median3_rec's preconditions.
         let arr_ptr = v.as_ptr();
         let len = v.len();
         let len_div_8 = len / 8;
-        let a = arr_ptr;
-        let b = arr_ptr.add(len_div_8 * 4);
-        let c = arr_ptr.add(len_div_8 * 7);
+        let a = arr_ptr; // [0, floor(n/8))
+        let b = arr_ptr.add(len_div_8 * 4); // [4*floor(n/8), 5*floor(n/8))
+        let c = arr_ptr.add(len_div_8 * 7); // [7*floor(n/8), 8*floor(n/8))
 
         if len < PSEUDO_MEDIAN_REC_THRESHOLD {
             median3(a, b, c, is_less).sub_ptr(arr_ptr)
@@ -122,8 +125,9 @@ unsafe fn median3_rec<T, F>(
 where
     F: FnMut(&T, &T) -> bool,
 {
+    // SAFETY: a, b, c still point to initialized regions of n / 8 elements,
+    // by the exact same logic as in choose_pivot.
     unsafe {
-        // SAFETY: a, b, c still point to initialized regions of n / 8 elements.
         if n * 8 >= PSEUDO_MEDIAN_REC_THRESHOLD {
             let n8 = n / 8;
             a = median3_rec(a, a.add(n8 * 4), a.add(n8 * 7), n8, is_less);
@@ -181,11 +185,12 @@ where
 {
     let num_lt = T::partition_fill_scratch(v, scratch, pivot_pos, is_less);
 
+    // SAFETY: partition_fill_scratch guarantees that scratch is initialized
+    // with a permuted copy of `v`, and that num_lt <= v.len(). Copying
+    // scratch[0..num_lt] and scratch[num_lt..v.len()] back is thus
+    // sound, as the values in scratch will never be read again, meaning our
+    // copies semantically act as moves, permuting `v`.
     unsafe {
-        // SAFETY: partition_fill_scratch guarantees that scratch is initialized
-        // with a permuted copy of `v`, and that num_lt <= v.len(). Copying
-        // scratch[0..num_lt] and scratch[num_lt..v.len()] back is thus
-        // sound, as the values in scratch will never be read again.
         let len = v.len();
         let arr_ptr = v.as_mut_ptr();
         let scratch_ptr = MaybeUninit::slice_as_mut_ptr(scratch);
@@ -203,7 +208,7 @@ where
 }
 
 trait StablePartitionTypeImpl: Sized {
-    /// Performs the same operation as `stable_partition`, except it stores the
+    /// Performs the same operation as [`stable_partition`], except it stores the
     /// permuted elements as copies in `scratch`, with the >= partition in
     /// reverse order.
     fn partition_fill_scratch<F>(
