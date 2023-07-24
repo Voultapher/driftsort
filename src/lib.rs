@@ -189,7 +189,8 @@ where
                 run_len += 1;
             }
         } else {
-            while run_len < len && !is_less(v.get_unchecked(run_len), v.get_unchecked(run_len - 1)) {
+            while run_len < len && !is_less(v.get_unchecked(run_len), v.get_unchecked(run_len - 1))
+            {
                 run_len += 1;
             }
         }

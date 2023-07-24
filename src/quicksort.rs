@@ -249,7 +249,7 @@ impl<T> StablePartitionTypeImpl for T {
             // num_lt = len - 1 - (len - 1 - num_lt) = len - 1 - num_ge.
             // We write one different element to scratch each iteration thus
             // scratch[0..len] will be initialized with a permutation of v.
-            // 
+            //
             // Should a panic occur, the copies in the scratch space are simply
             // forgotten - even with interior mutability all data is still in v.
             let pivot = arr_ptr.add(pivot_pos);
@@ -298,6 +298,7 @@ impl<T> StablePartitionTypeImpl for T {
 /// store. And explicit loop unrolling is also often very beneficial.
 impl<T> StablePartitionTypeImpl for T
 where
+    T: Copy,
     (): crate::IsTrue<{ mem::size_of::<T>() <= (mem::size_of::<u64>() * 2) }>,
 {
     /// See [`StablePartitionTypeImpl::partition_fill_scratch`].
