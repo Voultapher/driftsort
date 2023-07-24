@@ -86,7 +86,7 @@ where
     // We use unsafe code and raw pointers here because we're dealing with
     // heavy recursion. Passing safe slices around would involve a lot of
     // branches and function call overhead.
-    
+
     // SAFETY: a, b, c point to initialized regions of len_div_8 elements,
     // satisfying median3 and median3_rec's preconditions as arr_ptr points
     // to an initialized region of n = len elements.
