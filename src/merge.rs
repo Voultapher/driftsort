@@ -51,14 +51,14 @@ where
             hole = MergeHole {
                 start: buf,
                 end: buf.add(mid),
-                dest: v,
+                dst: v,
             };
         }
 
         // Initially, these pointers point to the beginnings of their arrays.
         let left = &mut hole.start;
         let mut right = v_mid;
-        let out = &mut hole.dest;
+        let out = &mut hole.dst;
 
         while *left < hole.end && right < v_end {
             // Consume the lesser side.
@@ -83,12 +83,12 @@ where
             hole = MergeHole {
                 start: buf,
                 end: buf.add(len - mid),
-                dest: v_mid,
+                dst: v_mid,
             };
         }
 
         // Initially, these pointers point past the ends of their arrays.
-        let left = &mut hole.dest;
+        let left = &mut hole.dst;
         let right = &mut hole.end;
         let mut out = v_end;
 
@@ -124,11 +124,11 @@ where
         *ptr
     }
 
-    // When dropped, copies the range `start..end` into `dest..`.
+    // When dropped, copies the range `start..end` into `dst..`.
     struct MergeHole<T> {
         start: *mut T,
         end: *mut T,
-        dest: *mut T,
+        dst: *mut T,
     }
 
     impl<T> Drop for MergeHole<T> {
@@ -136,7 +136,7 @@ where
             // SAFETY: `T` is not a zero-sized type, and these are pointers into a slice's elements.
             unsafe {
                 let len = self.end.sub_ptr(self.start);
-                ptr::copy_nonoverlapping(self.start, self.dest, len);
+                ptr::copy_nonoverlapping(self.start, self.dst, len);
             }
         }
     }
