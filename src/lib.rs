@@ -110,8 +110,9 @@ where
     // sized inputs while scaling down to len / 2 for larger inputs.
     const MAX_FULL_ALLOC_BYTES: usize = 8_000_000;
     let len = v.len();
+    let half = len / 2 + 1; // Add one such that for odd sizes either half fits.
     let full_alloc_size = cmp::min(len, MAX_FULL_ALLOC_BYTES / mem::size_of::<T>());
-    let alloc_size = cmp::max(len / 2, full_alloc_size);
+    let alloc_size = cmp::max(half, full_alloc_size);
 
     let mut buf = BufT::with_capacity(alloc_size);
     let scratch_slice =
