@@ -107,8 +107,7 @@ where
     //  - alloc len elements up to MAX_FULL_ALLOC_BYTES
     //  - alloc len / 2 elements
     // This allows us to use the most performant algorithms for small-medium
-    // sized inputs while scaling down to len / 2 for larger inputs. We need at
-    // least len / 2 for our stable merging routine.
+    // sized inputs while scaling down to len / 2 for larger inputs.
     const MAX_FULL_ALLOC_BYTES: usize = 8_000_000;
     let len = v.len();
     let full_alloc_size = cmp::min(len, MAX_FULL_ALLOC_BYTES / mem::size_of::<T>());
