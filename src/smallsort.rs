@@ -95,8 +95,9 @@ where
 {
     let len = v.len();
 
-    // Using assert here improves performance.
-    assert!(offset != 0 && offset <= len);
+    if offset == 0 || offset > len {
+        intrinsics::abort();
+    }
 
     // Shift each element of the unsorted region v[i..] as far left as is needed to make v sorted.
     for i in offset..len {

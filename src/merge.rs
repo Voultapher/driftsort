@@ -1,4 +1,5 @@
 use core::cmp;
+use core::intrinsics;
 use core::mem::MaybeUninit;
 use core::ptr;
 
@@ -154,7 +155,10 @@ where
     F: FnMut(&T, &T) -> bool,
 {
     let len = v.len();
-    assert!(mid > 0 && mid < len && scratch.len() >= (cmp::min(mid, len - mid)));
+
+    if mid == 0 || mid >= len || scratch.len() < cmp::min(mid, len - mid) {
+        intrinsics::abort();
+    }
 
     // SAFETY: We checked that the two slices must be non-empty and `mid` must be in bounds. The
     // caller has to guarantee that Buffer `buf` must be long enough to hold a copy of the shorter
