@@ -1,5 +1,7 @@
+use core::cmp;
 use core::mem::MaybeUninit;
 
+use crate::smallsort;
 use crate::DriftsortRun;
 
 // Lazy logical runs as in Glidesort.
@@ -144,7 +146,7 @@ pub fn sort<T, F: FnMut(&T, &T) -> bool>(
         // with root-level desired depth to fully collapse the merge tree.
         let (next_run, desired_depth);
         if scan_idx < len {
-            next_run = crate::create_run(&mut v[scan_idx..], min_good_run_len, eager_sort, is_less);
+            next_run = create_run(&mut v[scan_idx..], min_good_run_len, eager_sort, is_less);
             desired_depth = merge_tree_depth(
                 scan_idx - prev_run.len(),
                 scan_idx,
@@ -198,5 +200,67 @@ pub fn sort<T, F: FnMut(&T, &T) -> bool>(
 
     if !prev_run.sorted() {
         crate::stable_quicksort(v, scratch, is_less);
+    }
+}
+
+/// Creates a new logical run.
+///
+/// A logical run can either be sorted or unsorted. If there is a pre-existing
+/// run of length min_good_run_len (or longer) starting at v[0] we find and
+/// return it, otherwise we return a run of length min_good_run_len that is
+/// eagerly sorted when eager_sort is true, and left unsorted otherwise.
+fn create_run<T, F: FnMut(&T, &T) -> bool>(
+    v: &mut [T],
+    min_good_run_len: usize,
+    eager_sort: bool,
+    is_less: &mut F,
+) -> DriftsortRun {
+    let (run_len, was_reversed) = find_existing_run(v, is_less);
+    if run_len >= min_good_run_len {
+        if was_reversed {
+            v[..run_len].reverse();
+        }
+        DriftsortRun::new_sorted(run_len)
+    } else {
+        let new_run_len = cmp::min(min_good_run_len, v.len());
+        if eager_sort {
+            smallsort::sort_small(&mut v[..new_run_len], is_less);
+            DriftsortRun::new_sorted(new_run_len)
+        } else {
+            DriftsortRun::new_unsorted(new_run_len)
+        }
+    }
+}
+
+/// Finds a run of sorted elements starting at the beginning of the slice.
+///
+/// Returns the length of the run, and a bool that is false when the run
+/// is ascending, and true if the run strictly descending.
+fn find_existing_run<T, F>(v: &[T], is_less: &mut F) -> (usize, bool)
+where
+    F: FnMut(&T, &T) -> bool,
+{
+    let len = v.len();
+    if len < 2 {
+        return (len, false);
+    }
+
+    unsafe {
+        // SAFETY: We checked that len >= 2, so 0 and 1 are valid indices.
+        // This also means that run_len < len implies run_len and
+        // run_len - 1 are valid indices as well.
+        let mut run_len = 2;
+        let strictly_descending = is_less(v.get_unchecked(1), v.get_unchecked(0));
+        if strictly_descending {
+            while run_len < len && is_less(v.get_unchecked(run_len), v.get_unchecked(run_len - 1)) {
+                run_len += 1;
+            }
+        } else {
+            while run_len < len && !is_less(v.get_unchecked(run_len), v.get_unchecked(run_len - 1))
+            {
+                run_len += 1;
+            }
+        }
+        (run_len, strictly_descending)
     }
 }
