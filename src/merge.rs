@@ -147,7 +147,7 @@ where
 ///
 /// # Safety
 ///
-/// Buffer as pointed to by `buf_ptr` must have space for `buf_len` writes. And must not alias `v`.
+/// Buffer as pointed to by `buffer` must have space for `buf_len` writes. And must not alias `v`.
 #[inline(always)]
 pub fn merge<T, F>(v: &mut [T], scratch: &mut [MaybeUninit<T>], mid: usize, is_less: &mut F)
 where
@@ -160,9 +160,9 @@ where
     // caller has to guarantee that Buffer `buf` must be long enough to hold a copy of the shorter
     // slice. Also, `T` must not be a zero-sized type. We checked that T is observation safe. Should
     // is_less panic v was not modified in bi_directional_merge and retains it's original input.
-    // buf_ptr and v must not alias and swap has v.len() space.
+    // buffer and v must not alias and swap has v.len() space.
     unsafe {
-        let buf_ptr = MaybeUninit::slice_as_mut_ptr(scratch);
-        merge_fallback(v, mid, buf_ptr, is_less);
+        let buffer = MaybeUninit::slice_as_mut_ptr(scratch);
+        merge_fallback(v, mid, buffer, is_less);
     }
 }

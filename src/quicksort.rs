@@ -88,20 +88,20 @@ where
     // branches and function call overhead.
 
     // SAFETY: a, b, c point to initialized regions of len_div_8 elements,
-    // satisfying median3 and median3_rec's preconditions as arr_ptr points
+    // satisfying median3 and median3_rec's preconditions as v_base points
     // to an initialized region of n = len elements.
     unsafe {
-        let arr_ptr = v.as_ptr();
+        let v_base = v.as_ptr();
         let len = v.len();
         let len_div_8 = len / 8;
-        let a = arr_ptr; // [0, floor(n/8))
-        let b = arr_ptr.add(len_div_8 * 4); // [4*floor(n/8), 5*floor(n/8))
-        let c = arr_ptr.add(len_div_8 * 7); // [7*floor(n/8), 8*floor(n/8))
+        let a = v_base; // [0, floor(n/8))
+        let b = v_base.add(len_div_8 * 4); // [4*floor(n/8), 5*floor(n/8))
+        let c = v_base.add(len_div_8 * 7); // [7*floor(n/8), 8*floor(n/8))
 
         if len < PSEUDO_MEDIAN_REC_THRESHOLD {
-            median3(a, b, c, is_less).sub_ptr(arr_ptr)
+            median3(a, b, c, is_less).sub_ptr(v_base)
         } else {
-            median3_rec(a, b, c, len_div_8, is_less).sub_ptr(arr_ptr)
+            median3_rec(a, b, c, len_div_8, is_less).sub_ptr(v_base)
         }
     }
 }
@@ -192,15 +192,15 @@ where
     // copies semantically act as moves, permuting `v`.
     unsafe {
         let len = v.len();
-        let arr_ptr = v.as_mut_ptr();
-        let scratch_ptr = MaybeUninit::slice_as_mut_ptr(scratch);
+        let v_base = v.as_mut_ptr();
+        let scratch_base = MaybeUninit::slice_as_mut_ptr(scratch);
 
         // Copy all the elements < p directly from swap to v.
-        ptr::copy_nonoverlapping(scratch_ptr, arr_ptr, num_lt);
+        ptr::copy_nonoverlapping(scratch_base, v_base, num_lt);
 
         // Copy the elements >= p in reverse order.
         for i in 0..len - num_lt {
-            ptr::copy_nonoverlapping(scratch_ptr.add(len - 1 - i), arr_ptr.add(num_lt + i), 1);
+            ptr::copy_nonoverlapping(scratch_base.add(len - 1 - i), v_base.add(num_lt + i), 1);
         }
 
         num_lt
@@ -233,8 +233,8 @@ impl<T> StablePartitionTypeImpl for T {
         F: FnMut(&Self, &Self) -> bool,
     {
         let len = v.len();
-        let arr_ptr = v.as_ptr();
-        let scratch_ptr = MaybeUninit::slice_as_mut_ptr(scratch);
+        let v_base = v.as_ptr();
+        let scratch_base = MaybeUninit::slice_as_mut_ptr(scratch);
 
         if intrinsics::unlikely(scratch.len() < len || pivot_pos >= len) {
             core::intrinsics::abort()
@@ -257,17 +257,17 @@ impl<T> StablePartitionTypeImpl for T {
             //
             // Should a panic occur, the copies in the scratch space are simply
             // forgotten - even with interior mutability all data is still in v.
-            let pivot = arr_ptr.add(pivot_pos);
+            let pivot = v_base.add(pivot_pos);
             let mut pivot_in_scratch = ptr::null_mut();
             let mut num_lt = 0;
-            let mut scratch_rev = scratch_ptr.add(len);
+            let mut scratch_rev = scratch_base.add(len);
             for i in 0..len {
-                let scan = arr_ptr.add(i);
+                let scan = v_base.add(i);
                 scratch_rev = scratch_rev.sub(1);
 
                 let is_less_than_pivot = is_less(&*scan, &*pivot);
                 let dst = if is_less_than_pivot {
-                    scratch_ptr.add(num_lt) // i + num_lt
+                    scratch_base.add(num_lt) // i + num_lt
                 } else {
                     scratch_rev.add(num_lt) // len - (i + 1) + num_lt = len - 1 - num_ge
                 };
@@ -317,8 +317,8 @@ where
         F: FnMut(&Self, &Self) -> bool,
     {
         let len = v.len();
-        let arr_ptr = v.as_ptr();
-        let scratch_ptr = MaybeUninit::slice_as_mut_ptr(scratch);
+        let v_base = v.as_ptr();
+        let scratch_base = MaybeUninit::slice_as_mut_ptr(scratch);
 
         if intrinsics::unlikely(scratch.len() < len || pivot_pos >= len) {
             core::intrinsics::abort()
@@ -332,17 +332,17 @@ where
             // the final iteration we write to the same index twice. And we do
             // naive loop unrolling where the exact same loop body is just
             // repeated.
-            let pivot = arr_ptr.add(pivot_pos);
+            let pivot = v_base.add(pivot_pos);
             let mut pivot_in_scratch = ptr::null_mut();
             let mut num_lt = 0;
-            let mut scratch_rev = scratch_ptr.add(len);
+            let mut scratch_rev = scratch_base.add(len);
             macro_rules! loop_body {
                 ($i:expr) => {
-                    let scan = arr_ptr.add($i);
+                    let scan = v_base.add($i);
                     scratch_rev = scratch_rev.sub(1);
 
                     let is_less_than_pivot = is_less(&*scan, &*pivot);
-                    ptr::copy_nonoverlapping(scan, scratch_ptr.add(num_lt), 1);
+                    ptr::copy_nonoverlapping(scan, scratch_base.add(num_lt), 1);
                     ptr::copy_nonoverlapping(scan, scratch_rev.add(num_lt), 1);
 
                     // Save pivot location in scratch for later.
@@ -350,7 +350,7 @@ where
                         && intrinsics::unlikely(scan as *const T == pivot)
                     {
                         pivot_in_scratch = if is_less_than_pivot {
-                            scratch_ptr.add(num_lt) // i + num_lt
+                            scratch_base.add(num_lt) // i + num_lt
                         } else {
                             scratch_rev.add(num_lt) // len - (i + 1) + num_lt = len - 1 - num_ge
                         };
