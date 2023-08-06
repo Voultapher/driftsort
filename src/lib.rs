@@ -112,7 +112,11 @@ where
     const MAX_FULL_ALLOC_BYTES: usize = 8_000_000;
     let len = v.len();
     let full_alloc_size = cmp::min(len, MAX_FULL_ALLOC_BYTES / mem::size_of::<T>());
-    let alloc_size = cmp::max(len / 2, full_alloc_size);
+
+    let alloc_size = cmp::max(
+        cmp::max(len / 2, full_alloc_size),
+        crate::smallsort::MAX_SMALL_SORT_SCRATCH_LEN,
+    );
 
     let mut buf = BufT::with_capacity(alloc_size);
     let scratch_slice =

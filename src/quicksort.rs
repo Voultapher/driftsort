@@ -3,9 +3,7 @@ use core::mem::{self, ManuallyDrop, MaybeUninit};
 use core::ptr;
 
 use crate::has_direct_interior_mutability;
-
-// Switch to a dedicated small array sorting algorithm below this threshold.
-pub const SMALL_SORT_THRESHOLD: usize = 20;
+use crate::smallsort::SmallSortTypeImpl;
 
 // Recursively select a pseudomedian if above this threshold.
 const PSEUDO_MEDIAN_REC_THRESHOLD: usize = 64;
@@ -24,8 +22,13 @@ pub fn stable_quicksort<T, F>(
     F: FnMut(&T, &T) -> bool,
 {
     loop {
-        if v.len() <= SMALL_SORT_THRESHOLD {
-            crate::smallsort::sort_small(v, is_less);
+        let len = v.len();
+
+        if len <= T::MAX_LEN_SMALL_SORT {
+            // `sort_small` will do that check again but this way we avoid the call overhead.
+            if len >= 2 {
+                T::sort_small(v, scratch, is_less);
+            }
             return;
         }
 
