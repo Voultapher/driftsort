@@ -9,12 +9,151 @@ use core::ptr;
 // times, so hot benchmarks are fine and more realistic. And it's worth it to optimize sorting
 // small sub-slices with more sophisticated solutions than insertion sort.
 
-/// Sorts `v` using strategies optimized for small sizes.
-pub fn sort_small<T, F>(v: &mut [T], is_less: &mut F)
+// Use a trait to focus code-gen on only the parts actually relevant for the type. Avoid generating
+// LLVM-IR for the sorting-network and median-networks for types that don't qualify.
+pub(crate) trait SmallSortTypeImpl: Sized {
+    const MAX_LEN_SMALL_SORT: usize;
+
+    /// Sorts `v` using strategies optimized for small sizes.
+    fn sort_small<F>(v: &mut [Self], scratch: &mut [MaybeUninit<Self>], is_less: &mut F)
+    where
+        F: FnMut(&Self, &Self) -> bool;
+}
+
+impl<T> SmallSortTypeImpl for T {
+    default const MAX_LEN_SMALL_SORT: usize = 16;
+
+    default fn sort_small<F>(v: &mut [Self], _scratch: &mut [MaybeUninit<Self>], is_less: &mut F)
+    where
+        F: FnMut(&T, &T) -> bool,
+    {
+        if v.len() >= 2 {
+            insertion_sort_shift_left(v, 1, is_less);
+        }
+    }
+}
+
+pub(crate) const MAX_SMALL_SORT_SCRATCH_LEN: usize = i32::MAX_LEN_SMALL_SORT + 16;
+
+impl<T> SmallSortTypeImpl for T
 where
-    F: FnMut(&T, &T) -> bool,
+    T: crate::Freeze,
+    (): crate::IsTrue<{ mem::size_of::<T>() <= 96 }>,
 {
-    T::small_sort(v, is_less);
+    const MAX_LEN_SMALL_SORT: usize = 20;
+
+    fn sort_small<F>(v: &mut [Self], scratch: &mut [MaybeUninit<Self>], is_less: &mut F)
+    where
+        F: FnMut(&T, &T) -> bool,
+    {
+        let len = v.len();
+
+        if len >= 2 {
+            if scratch.len() < MAX_SMALL_SORT_SCRATCH_LEN {
+                intrinsics::abort();
+            }
+
+            let v_base = v.as_mut_ptr();
+
+            let offset = if len >= 8 {
+                let len_div_2 = len / 2;
+
+                // SAFETY: TODO
+                unsafe {
+                    let scratch_base = scratch.as_mut_ptr() as *mut T;
+
+                    let mut drop_guard = DropGuard {
+                        src: scratch_base.add(T::MAX_LEN_SMALL_SORT),
+                        dst: v_base,
+                        len: 0,
+                    };
+
+                    let presorted_len = if len >= 16 {
+                        // SAFETY: scratch_base is valid and has enough space.
+                        sort8_stable(
+                            drop_guard.dst,
+                            drop_guard.src,
+                            scratch_base,
+                            &mut drop_guard.len,
+                            is_less,
+                        );
+
+                        drop_guard.src = scratch_base.add(T::MAX_LEN_SMALL_SORT + 8);
+                        drop_guard.dst = v_base.add(len_div_2);
+                        drop_guard.len = 0;
+                        sort8_stable(
+                            drop_guard.dst,
+                            drop_guard.src,
+                            scratch_base.add(len_div_2),
+                            &mut drop_guard.len,
+                            is_less,
+                        );
+
+                        8
+                    } else {
+                        // SAFETY: scratch_base is valid and has enough space.
+                        sort4_stable(v_base, scratch_base, is_less);
+                        sort4_stable(v_base.add(len_div_2), scratch_base.add(len_div_2), is_less);
+
+                        4
+                    };
+
+                    for offset in [0, len_div_2] {
+                        drop_guard.src = scratch_base.add(offset);
+                        drop_guard.dst = v_base.add(offset);
+
+                        for i in presorted_len..len_div_2 {
+                            drop_guard.len = i + 1;
+
+                            ptr::copy_nonoverlapping(
+                                drop_guard.dst.add(i),
+                                drop_guard.src.add(i),
+                                1,
+                            );
+                            let scratch_slice =
+                                &mut *ptr::slice_from_raw_parts_mut(drop_guard.src, drop_guard.len);
+                            insert_tail(scratch_slice, is_less);
+                        }
+                    }
+
+                    let even_len = len - (len % 2);
+
+                    drop_guard.src = scratch_base;
+                    drop_guard.dst = v_base;
+                    drop_guard.len = even_len;
+
+                    bi_directional_merge_even(
+                        &*ptr::slice_from_raw_parts(drop_guard.src, drop_guard.len),
+                        drop_guard.dst,
+                        is_less,
+                    );
+                    mem::forget(drop_guard);
+
+                    even_len
+                }
+            } else {
+                1
+            };
+
+            insertion_sort_shift_left(v, offset, is_less);
+        }
+
+        struct DropGuard<T> {
+            src: *mut T,
+            dst: *mut T,
+            len: usize,
+        }
+
+        impl<T> Drop for DropGuard<T> {
+            fn drop(&mut self) {
+                // SAFETY: `T` is not a zero-sized type, src must hold the original `len` elements
+                // of `v` in any order. And dst must be valid to write `len` elements.
+                unsafe {
+                    ptr::copy_nonoverlapping(self.src, self.dst, self.len);
+                }
+            }
+        }
+    }
 }
 
 struct GapGuard<T> {
@@ -109,85 +248,8 @@ where
     }
 }
 
-// Use a trait to focus code-gen on only the parts actually relevant for the type. Avoid generating
-// LLVM-IR for the sorting-network and median-networks for types that don't qualify.
-trait SmallSortTypeImpl: Sized {
-    fn small_sort<F>(v: &mut [Self], is_less: &mut F)
-    where
-        F: FnMut(&Self, &Self) -> bool;
-}
-
-impl<T> SmallSortTypeImpl for T {
-    default fn small_sort<F>(v: &mut [Self], is_less: &mut F)
-    where
-        F: FnMut(&T, &T) -> bool,
-    {
-        if v.len() >= 2 {
-            insertion_sort_shift_left(v, 1, is_less);
-        }
-    }
-}
-
-impl<T: crate::Freeze> SmallSortTypeImpl for T {
-    fn small_sort<F>(v: &mut [Self], is_less: &mut F)
-    where
-        F: FnMut(&T, &T) -> bool,
-    {
-        const MAX_SIZE: usize = crate::quicksort::SMALL_SORT_THRESHOLD;
-
-        let len = v.len();
-
-        let mut scratch = MaybeUninit::<[T; MAX_SIZE]>::uninit();
-        let scratch_base = scratch.as_mut_ptr() as *mut T;
-
-        if len >= 16 && len <= MAX_SIZE {
-            let even_len = len - (len % 2);
-            let len_div_2 = even_len / 2;
-
-            // SAFETY: scratch_base is valid and has enough space. And we checked that both
-            // v[..len_div_2] and v[len_div_2..] are at least 8 large.
-            unsafe {
-                let v_base = v.as_mut_ptr();
-                sort8_stable(v_base, scratch_base, is_less);
-                sort8_stable(v_base.add(len_div_2), scratch_base, is_less);
-            }
-
-            insertion_sort_shift_left(&mut v[0..len_div_2], 8, is_less);
-            insertion_sort_shift_left(&mut v[len_div_2..], 8, is_less);
-
-            // SAFETY: We checked that T is Freeze and thus observation safe. Should is_less panic v
-            // was not modified in parity_merge and retains it's original input. swap and v must not
-            // alias and swap has v.len() space.
-            unsafe {
-                bi_directional_merge_even(&mut v[..even_len], scratch_base, is_less);
-                ptr::copy_nonoverlapping(scratch_base, v.as_mut_ptr(), even_len);
-            }
-
-            if len != even_len {
-                // SAFETY: We know len >= 2.
-                unsafe {
-                    insert_tail(v, is_less);
-                }
-            }
-        } else if len >= 2 {
-            let offset = if len >= 8 {
-                // SAFETY: scratch_base is valid and has enough space.
-                unsafe {
-                    sort8_stable(v.as_mut_ptr(), scratch_base, is_less);
-                }
-
-                8
-            } else {
-                1
-            };
-
-            insertion_sort_shift_left(v, offset, is_less);
-        }
-    }
-}
-
 /// SAFETY: The caller MUST guarantee that `v_base` is valid for 4 reads and `dest_ptr` is valid
-/// for 4 writes.
+/// for 4 writes. The result will be stored in `dst[0..4]`.
 pub unsafe fn sort4_stable<T, F>(v_base: *const T, dst: *mut T, is_less: &mut F)
 where
     F: FnMut(&T, &T) -> bool,
@@ -201,12 +263,12 @@ where
 
     unsafe {
         // Stably create two pairs a <= b and c <= d.
-        let c1 = is_less(&*v_base.add(1), &*v_base) as usize;
-        let c2 = is_less(&*v_base.add(3), &*v_base.add(2)) as usize;
-        let a = v_base.add(c1);
-        let b = v_base.add(c1 ^ 1);
-        let c = v_base.add(2 + c2);
-        let d = v_base.add(2 + (c2 ^ 1));
+        let c1 = is_less(&*v_base.add(1), &*v_base);
+        let c2 = is_less(&*v_base.add(3), &*v_base.add(2));
+        let a = v_base.add(c1 as usize);
+        let b = v_base.add(!c1 as usize);
+        let c = v_base.add(2 + c2 as usize);
+        let d = v_base.add(2 + (!c2 as usize));
 
         // Compare (a, c) and (b, d) to identify max/min. We're left with two
         // unknown elements, but because we are a stable sort we must know which
@@ -244,11 +306,16 @@ where
     }
 }
 
-/// SAFETY: The caller MUST guarantee that `v_base` is valid for 8 reads and writes, and
-/// `scratch_base` is valid for 8 writes.
+/// SAFETY: The caller MUST guarantee that `v_base` is valid for 8 reads and writes, `scratch_base`
+/// and `dst` MUST be valid for 8 writes. The result will be stored in `dst[0..8]`.
 #[inline(never)]
-unsafe fn sort8_stable<T, F>(v_base: *mut T, scratch_base: *mut T, is_less: &mut F)
-where
+unsafe fn sort8_stable<T, F>(
+    v_base: *mut T,
+    scratch_base: *mut T,
+    dst: *mut T,
+    scratch_panic_save: &mut usize,
+    is_less: &mut F,
+) where
     T: crate::Freeze,
     F: FnMut(&T, &T) -> bool,
 {
@@ -263,33 +330,13 @@ where
     // Should is_less panic v was not modified in parity_merge and retains its original input.
     // swap and v must not alias and swap has v.len() space.
     unsafe {
-        // It's slightly faster to merge directly into v and copy over the 'safe' elements of swap
+        // It's faster to merge directly into v and copy over the 'safe' elements of swap
         // into v only if there was a panic. This technique is also known as ping-pong merge.
-        let drop_guard = DropGuard {
-            src: scratch_base,
-            dst: v_base,
-        };
-        bi_directional_merge_even(
-            &*ptr::slice_from_raw_parts(scratch_base, 8),
-            v_base,
-            is_less,
-        );
-        mem::forget(drop_guard);
-    }
-
-    struct DropGuard<T> {
-        src: *const T,
-        dst: *mut T,
-    }
-
-    impl<T> Drop for DropGuard<T> {
-        fn drop(&mut self) {
-            // SAFETY: `T` is not a zero-sized type, src must hold the original 8 elements of v in
-            // any order. And dst must be valid to write 8 elements.
-            unsafe {
-                ptr::copy_nonoverlapping(self.src, self.dst, 8);
-            }
-        }
+        //
+        // 8 values starting at `scratch_base` will no be fed into the user provided `is_less`
+        // if that panics we need to copy `scratch_base[0..8]` back into the original slice.
+        *scratch_panic_save = 8;
+        bi_directional_merge_even(&*ptr::slice_from_raw_parts(scratch_base, 8), dst, is_less);
     }
 }
 
@@ -370,6 +417,9 @@ where
 /// Original idea for bi-directional merging by Igor van den Hoven (quadsort), adapted to only use
 /// merge up and down. In contrast to the original parity_merge function, it performs 2 writes
 /// instead of 4 per iteration. Ord violation detection was added.
+///
+/// TODO consider the 2-3% perf hit.
+// #[inline(never)]
 unsafe fn bi_directional_merge_even<T, F>(v: &[T], dst: *mut T, is_less: &mut F)
 where
     T: crate::Freeze,
@@ -413,6 +463,7 @@ where
     let src = v.as_ptr();
 
     let len_div_2 = len / 2;
+    intrinsics::assume(len_div_2 != 0); // This can avoid useless code-gen.
 
     // SAFETY: No matter what the result of the user-provided comparison function is, all 4 read
     // pointers will always be in-bounds. Writing `dst` and `dst_rev` will always be in

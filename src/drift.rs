@@ -1,7 +1,7 @@
 use core::cmp;
 use core::mem::MaybeUninit;
 
-use crate::smallsort;
+use crate::smallsort::SmallSortTypeImpl;
 use crate::DriftsortRun;
 
 // Lazy logical runs as in Glidesort.
@@ -121,7 +121,7 @@ pub fn sort<T, F: FnMut(&T, &T) -> bool>(
     // as our threshold, as we will call small_sort on any runs smaller than this.
     const MIN_MERGE_SLICE_LEN: usize = 32;
     let min_good_run_len = if eager_sort {
-        crate::quicksort::SMALL_SORT_THRESHOLD
+        T::MAX_LEN_SMALL_SORT
     } else if len <= (MIN_MERGE_SLICE_LEN * MIN_MERGE_SLICE_LEN) {
         MIN_MERGE_SLICE_LEN
     } else {
@@ -146,7 +146,13 @@ pub fn sort<T, F: FnMut(&T, &T) -> bool>(
         // with root-level desired depth to fully collapse the merge tree.
         let (next_run, desired_depth);
         if scan_idx < len {
-            next_run = create_run(&mut v[scan_idx..], min_good_run_len, eager_sort, is_less);
+            next_run = create_run(
+                &mut v[scan_idx..],
+                scratch,
+                min_good_run_len,
+                eager_sort,
+                is_less,
+            );
             desired_depth = merge_tree_depth(
                 scan_idx - prev_run.len(),
                 scan_idx,
@@ -211,6 +217,7 @@ pub fn sort<T, F: FnMut(&T, &T) -> bool>(
 /// eagerly sorted when eager_sort is true, and left unsorted otherwise.
 fn create_run<T, F: FnMut(&T, &T) -> bool>(
     v: &mut [T],
+    scratch: &mut [MaybeUninit<T>],
     min_good_run_len: usize,
     eager_sort: bool,
     is_less: &mut F,
@@ -224,7 +231,7 @@ fn create_run<T, F: FnMut(&T, &T) -> bool>(
     } else {
         let new_run_len = cmp::min(min_good_run_len, v.len());
         if eager_sort {
-            smallsort::sort_small(&mut v[..new_run_len], is_less);
+            T::sort_small(&mut v[..new_run_len], scratch, is_less);
             DriftsortRun::new_sorted(new_run_len)
         } else {
             DriftsortRun::new_unsorted(new_run_len)
