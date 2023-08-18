@@ -1,5 +1,4 @@
 use core::cmp;
-use core::intrinsics;
 use core::mem::MaybeUninit;
 use core::ptr;
 
