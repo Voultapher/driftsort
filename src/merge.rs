@@ -12,7 +12,7 @@ where
     let len = v.len();
 
     if mid == 0 || mid >= len || scratch.len() < cmp::min(mid, len - mid) {
-        intrinsics::abort();
+        return;
     }
 
     // SAFETY: We checked that the two slices are non-empty and `mid` is in bounds. We checked that
