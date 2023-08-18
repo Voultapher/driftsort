@@ -277,7 +277,7 @@ impl<T> StablePartitionTypeImpl for T {
 
                 // Save pivot location in scratch for later.
                 if const { crate::has_direct_interior_mutability::<T>() }
-                    && intrinsics::unlikely(scan as *const T == pivot)
+                    && intrinsics::unlikely(scan == pivot)
                 {
                     pivot_in_scratch = dst;
                 }
