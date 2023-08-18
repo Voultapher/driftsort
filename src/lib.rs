@@ -178,21 +178,16 @@ unsafe impl<T: ?Sized> Freeze for *mut T {}
 unsafe impl<T: ?Sized> Freeze for &T {}
 unsafe impl<T: ?Sized> Freeze for &mut T {}
 
-#[const_trait]
 trait IsFreeze {
-    fn value() -> bool;
+    const IS_FREEZE: bool;
 }
 
 impl<T> const IsFreeze for T {
-    default fn value() -> bool {
-        false
-    }
+    default const IS_FREEZE: bool = false;
 }
 
 impl<T: Freeze> const IsFreeze for T {
-    fn value() -> bool {
-        true
-    }
+    const IS_FREEZE: bool = true;
 }
 
 #[must_use]
@@ -201,7 +196,7 @@ const fn has_direct_interior_mutability<T>() -> bool {
     // can have interior mutability it may alter itself during comparison in a way that must be
     // observed after the sort operation concludes. Otherwise a type like Mutex<Option<Box<str>>>
     // could lead to double free.
-    !<T as IsFreeze>::value()
+    !T::IS_FREEZE
 }
 
 trait IsTrue<const B: bool> {}
