@@ -167,12 +167,17 @@ impl<T> BufGuard<T> for Vec<T> {
 
 // --- Type info ---
 
-// Can the type have interior mutability, this is checked by testing if T is Freeze. If the type can
-// have interior mutability it may alter itself during comparison in a way that must be observed
-// after the sort operation concludes. Otherwise a type like Mutex<Option<Box<str>>> could lead to
-// double free.
-//
-// Direct copy of stdlib internal implementation of Freeze.
+/// # Safety
+///
+/// This is an internal trait that must match Rust
+/// interior mutability rules.
+///
+/// Can the type have interior mutability, this is checked by testing if T is Freeze. If the type can
+/// have interior mutability it may alter itself during comparison in a way that must be observed
+/// after the sort operation concludes. Otherwise a type like Mutex<Option<Box<str>>> could lead to
+/// double free.
+///
+/// Direct copy of stdlib internal implementation of Freeze.
 pub(crate) unsafe auto trait Freeze {}
 
 impl<T: ?Sized> !Freeze for core::cell::UnsafeCell<T> {}
