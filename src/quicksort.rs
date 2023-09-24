@@ -42,6 +42,10 @@ pub fn stable_quicksort<T, F>(
         // self-modifications via `is_less` would not be observed and this would
         // be unsound. Our temporary copy does not escape this scope.
         let pivot_idx = choose_pivot(v, is_less);
+        // SAFETY: choose_pivot promises to return a valid pivot index.
+        unsafe {
+            intrinsics::assume(pivot_idx < v.len());
+        }
         let pivot_copy = unsafe { ManuallyDrop::new(ptr::read(&v[pivot_idx])) };
         let pivot_ref = (!has_direct_interior_mutability::<T>()).then_some(&*pivot_copy);
 

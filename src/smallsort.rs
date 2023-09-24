@@ -60,32 +60,48 @@ where
 
                 // SAFETY: TODO
                 unsafe {
-                    let scratch_base = scratch.as_mut_ptr() as *mut T;
+                    // Help the compiler, avoids unnecessary panic code because of slicing.
+                    intrinsics::assume(v.len() > len_div_2);
+                    intrinsics::assume(scratch.len() > len_div_2);
+
+                    let scratch_base_m = scratch.as_mut_ptr();
 
                     let presorted_len = if len >= 16 {
                         // SAFETY: scratch_base is valid and has enough space.
                         sort8_stable(
-                            v_base,
-                            scratch_base.add(T::MAX_LEN_SMALL_SORT),
-                            scratch_base,
+                            v,
+                            &mut *ptr::slice_from_raw_parts_mut(
+                                scratch_base_m.add(T::MAX_LEN_SMALL_SORT),
+                                8,
+                            ),
+                            &mut *ptr::slice_from_raw_parts_mut(scratch_base_m, 8),
                             is_less,
                         );
 
                         sort8_stable(
-                            v_base.add(len_div_2),
-                            scratch_base.add(T::MAX_LEN_SMALL_SORT + 8),
-                            scratch_base.add(len_div_2),
+                            &v[len_div_2..],
+                            &mut *ptr::slice_from_raw_parts_mut(
+                                scratch_base_m.add(T::MAX_LEN_SMALL_SORT + 8),
+                                8,
+                            ),
+                            &mut *ptr::slice_from_raw_parts_mut(scratch_base_m.add(len_div_2), 8),
                             is_less,
                         );
 
                         8
                     } else {
                         // SAFETY: scratch_base is valid and has enough space.
-                        sort4_stable(v_base, scratch_base, is_less);
-                        sort4_stable(v_base.add(len_div_2), scratch_base.add(len_div_2), is_less);
+                        sort4_stable(v, scratch, is_less);
+                        sort4_stable(
+                            &*ptr::slice_from_raw_parts(v_base.add(len_div_2), 4),
+                            &mut scratch[len_div_2..],
+                            is_less,
+                        );
 
                         4
                     };
+
+                    let scratch_base = scratch.as_mut_ptr() as *mut T;
 
                     for offset in [0, len_div_2] {
                         let src = scratch_base.add(offset);
@@ -112,7 +128,10 @@ where
                     // ping-pong merging.
                     bi_directional_merge_even(
                         &*ptr::slice_from_raw_parts(drop_guard.src, drop_guard.len),
-                        drop_guard.dst,
+                        &mut *ptr::slice_from_raw_parts_mut(
+                            drop_guard.dst as *mut MaybeUninit<T>,
+                            drop_guard.len,
+                        ),
                         is_less,
                     );
                     mem::forget(drop_guard);
@@ -238,7 +257,7 @@ where
 
 /// SAFETY: The caller MUST guarantee that `v_base` is valid for 4 reads and `dest_ptr` is valid
 /// for 4 writes. The result will be stored in `dst[0..4]`.
-pub unsafe fn sort4_stable<T, F>(v_base: *const T, dst: *mut T, is_less: &mut F)
+pub unsafe fn sort4_stable<T, F>(v: &[T], dst: &mut [MaybeUninit<T>], is_less: &mut F)
 where
     F: FnMut(&T, &T) -> bool,
 {
@@ -247,7 +266,8 @@ where
     // transposition 4 element sorting-network. Also by only operating on pointers, we get optimal
     // element copy usage. Doing exactly 1 copy per element.
 
-    // let v_base = v.as_ptr();
+    let v_base = v.as_ptr();
+    let dst_base = dst.as_mut_ptr() as *mut T;
 
     unsafe {
         // Stably create two pairs a <= b and c <= d.
@@ -278,10 +298,10 @@ where
         let lo = select(c5, unknown_right, unknown_left);
         let hi = select(c5, unknown_left, unknown_right);
 
-        ptr::copy_nonoverlapping(min, dst, 1);
-        ptr::copy_nonoverlapping(lo, dst.add(1), 1);
-        ptr::copy_nonoverlapping(hi, dst.add(2), 1);
-        ptr::copy_nonoverlapping(max, dst.add(3), 1);
+        ptr::copy_nonoverlapping(min, dst_base, 1);
+        ptr::copy_nonoverlapping(lo, dst_base.add(1), 1);
+        ptr::copy_nonoverlapping(hi, dst_base.add(2), 1);
+        ptr::copy_nonoverlapping(max, dst_base.add(3), 1);
     }
 
     #[inline(always)]
@@ -296,22 +316,31 @@ where
 
 /// SAFETY: The caller MUST guarantee that `v_base` is valid for 8 reads and writes, `scratch_base`
 /// and `dst` MUST be valid for 8 writes. The result will be stored in `dst[0..8]`.
-#[inline(never)]
-unsafe fn sort8_stable<T, F>(v_base: *mut T, scratch_base: *mut T, dst: *mut T, is_less: &mut F)
-where
+unsafe fn sort8_stable<T, F>(
+    v: &[T],
+    scratch: &mut [MaybeUninit<T>],
+    dst: &mut [MaybeUninit<T>],
+    is_less: &mut F,
+) where
     T: crate::Freeze,
     F: FnMut(&T, &T) -> bool,
 {
+    intrinsics::assume(v.len() >= 8 && scratch.len() >= 8 && dst.len() >= 8);
+
     // SAFETY: The caller must guarantee that scratch_base is valid for 8 writes, and that v_base is
     // valid for 8 reads.
     unsafe {
-        sort4_stable(v_base, scratch_base, is_less);
-        sort4_stable(v_base.add(4), scratch_base.add(4), is_less);
+        sort4_stable(v, scratch, is_less);
+        sort4_stable(&v[4..], &mut scratch[4..], is_less);
     }
 
     // SAFETY: TODO
     unsafe {
-        bi_directional_merge_even(&*ptr::slice_from_raw_parts(scratch_base, 8), dst, is_less);
+        bi_directional_merge_even(
+            &*ptr::slice_from_raw_parts(scratch.as_ptr() as *const T, 8),
+            dst,
+            is_less,
+        );
     }
 }
 
@@ -395,7 +424,7 @@ where
 ///
 // SAFETY: the caller must guarantee that `dst` is valid for v.len() writes.
 // Also `v.as_ptr` and `dst` must not alias.
-unsafe fn bi_directional_merge_even<T, F>(v: &[T], dst: *mut T, is_less: &mut F)
+unsafe fn bi_directional_merge_even<T, F>(v: &[T], dst: &mut [MaybeUninit<T>], is_less: &mut F)
 where
     T: crate::Freeze,
     F: FnMut(&T, &T) -> bool,
@@ -409,8 +438,8 @@ where
     //
     // Initial:
     //
-    //  |dst (in dst)
-    //  |left               |right
+    //  |dst_fwd (in dst)
+    //  |left_fwd           |right_fwd
     //  v                   v
     // [xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx]
     //                     ^                   ^
@@ -419,8 +448,8 @@ where
     //
     // After:
     //
-    //                      |dst (in dst)
-    //        |left         |           |right
+    //                      |dst_fwd (in dst)
+    //        |left_fwd     |           |right_fwd
     //        v             v           v
     // [xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx]
     //       ^             ^           ^
@@ -431,31 +460,34 @@ where
     // Note, the pointers that have been written, are now one past where they were read and
     // copied. written == incremented or decremented + copy to dst.
 
+    // This can avoid useless code-gen.
+    intrinsics::assume(v.len() >= 2 && v.len() % 2 == 0 && v.len() == dst.len());
+
     let len = v.len();
-    let src = v.as_ptr();
+    let v_base = v.as_ptr();
+    let dst_base = dst.as_mut_ptr() as *mut T;
 
     let len_div_2 = len / 2;
-    intrinsics::assume(len_div_2 != 0); // This can avoid useless code-gen.
 
     // SAFETY: No matter what the result of the user-provided comparison function is, all 4 read
     // pointers will always be in-bounds. Writing `dst` and `dst_rev` will always be in
     // bounds if the caller guarantees that `dst` is valid for `v.len()` writes.
     unsafe {
-        let mut left = src;
-        let mut right = src.wrapping_add(len_div_2);
-        let mut dst = dst;
+        let mut left_fwd = v_base;
+        let mut right_fwd = v_base.wrapping_add(len_div_2);
+        let mut dst_fwd = dst_base;
 
-        let mut left_rev = src.wrapping_add(len_div_2 - 1);
-        let mut right_rev = src.wrapping_add(len - 1);
-        let mut dst_rev = dst.wrapping_add(len - 1);
+        let mut left_rev = v_base.wrapping_add(len_div_2 - 1);
+        let mut right_rev = v_base.wrapping_add(len - 1);
+        let mut dst_rev = dst_base.wrapping_add(len - 1);
 
         for _ in 0..len_div_2 {
-            (left, right, dst) = merge_up(left, right, dst, is_less);
+            (left_fwd, right_fwd, dst_fwd) = merge_up(left_fwd, right_fwd, dst_fwd, is_less);
             (left_rev, right_rev, dst_rev) = merge_down(left_rev, right_rev, dst_rev, is_less);
         }
 
-        let left_diff = (left as usize).wrapping_sub(left_rev as usize);
-        let right_diff = (right as usize).wrapping_sub(right_rev as usize);
+        let left_diff = (left_fwd as usize).wrapping_sub(left_rev as usize);
+        let right_diff = (right_fwd as usize).wrapping_sub(right_rev as usize);
 
         if !(left_diff == mem::size_of::<T>() && right_diff == mem::size_of::<T>()) {
             panic_on_ord_violation();
