@@ -1,4 +1,5 @@
 use core::cmp;
+use core::intrinsics;
 use core::mem::MaybeUninit;
 
 use crate::smallsort::SmallSortTypeImpl;
@@ -223,6 +224,12 @@ fn create_run<T, F: FnMut(&T, &T) -> bool>(
     is_less: &mut F,
 ) -> DriftsortRun {
     let (run_len, was_reversed) = find_existing_run(v, is_less);
+
+    // SAFETY: find_existing_run promises to return a valid run_len.
+    unsafe {
+        intrinsics::assume(run_len <= v.len());
+    }
+
     if run_len >= min_good_run_len {
         if was_reversed {
             v[..run_len].reverse();
@@ -230,6 +237,7 @@ fn create_run<T, F: FnMut(&T, &T) -> bool>(
         DriftsortRun::new_sorted(run_len)
     } else {
         let new_run_len = cmp::min(min_good_run_len, v.len());
+
         if eager_sort {
             T::sort_small(&mut v[..new_run_len], scratch, is_less);
             DriftsortRun::new_sorted(new_run_len)
