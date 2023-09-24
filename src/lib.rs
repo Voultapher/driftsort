@@ -97,6 +97,8 @@ where
     driftsort_main::<T, F, BufT>(v, is_less);
 }
 
+// Deliberately don't inline the core logic to ensure the inlined insertion sort i-cache footprint
+// is minimal.
 #[inline(never)]
 fn driftsort_main<T, F, BufT>(v: &mut [T], is_less: &mut F)
 where
@@ -125,7 +127,6 @@ where
     drift::sort(v, scratch_slice, false, is_less);
 }
 
-#[inline(never)]
 fn physical_merge<T, F: FnMut(&T, &T) -> bool>(
     v: &mut [T],
     scratch: &mut [MaybeUninit<T>],
@@ -135,7 +136,6 @@ fn physical_merge<T, F: FnMut(&T, &T) -> bool>(
     merge::merge(v, scratch, mid, is_less)
 }
 
-#[inline(never)]
 fn stable_quicksort<T, F: FnMut(&T, &T) -> bool>(
     v: &mut [T],
     scratch: &mut [MaybeUninit<T>],
