@@ -25,10 +25,7 @@ pub fn stable_quicksort<T, F>(
         let len = v.len();
 
         if len <= T::MAX_LEN_SMALL_SORT {
-            // `sort_small` will do that check again but this way we avoid the call overhead.
-            if len >= 2 {
-                T::sort_small(v, scratch, is_less);
-            }
+            T::sort_small(v, scratch, is_less);
             return;
         }
 
