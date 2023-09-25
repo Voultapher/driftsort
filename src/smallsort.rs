@@ -15,18 +15,21 @@ pub(crate) trait SmallSortTypeImpl: Sized {
     const MAX_LEN_SMALL_SORT: usize;
 
     /// Sorts `v` using strategies optimized for small sizes.
-    fn sort_small<F>(v: &mut [Self], scratch: &mut [MaybeUninit<Self>], is_less: &mut F)
-    where
-        F: FnMut(&Self, &Self) -> bool;
+    fn sort_small<F: FnMut(&Self, &Self) -> bool>(
+        v: &mut [Self],
+        scratch: &mut [MaybeUninit<Self>],
+        is_less: &mut F,
+    );
 }
 
 impl<T> SmallSortTypeImpl for T {
     default const MAX_LEN_SMALL_SORT: usize = 16;
 
-    default fn sort_small<F>(v: &mut [Self], _scratch: &mut [MaybeUninit<Self>], is_less: &mut F)
-    where
-        F: FnMut(&T, &T) -> bool,
-    {
+    default fn sort_small<F: FnMut(&T, &T) -> bool>(
+        v: &mut [Self],
+        _scratch: &mut [MaybeUninit<Self>],
+        is_less: &mut F,
+    ) {
         if v.len() >= 2 {
             insertion_sort_shift_left(v, 1, is_less);
         }
@@ -42,10 +45,11 @@ where
 {
     const MAX_LEN_SMALL_SORT: usize = 20;
 
-    fn sort_small<F>(v: &mut [Self], scratch: &mut [MaybeUninit<Self>], is_less: &mut F)
-    where
-        F: FnMut(&T, &T) -> bool,
-    {
+    fn sort_small<F: FnMut(&T, &T) -> bool>(
+        v: &mut [Self],
+        scratch: &mut [MaybeUninit<Self>],
+        is_less: &mut F,
+    ) {
         let len = v.len();
 
         if len >= 2 {
@@ -161,10 +165,7 @@ impl<T> Drop for GapGuard<T> {
 /// becomes sorted. Returns the insert position.
 /// Inserts `v[v.len() - 1]` into pre-sorted sequence `v[..v.len() - 1]` so that whole `v[..]`
 /// becomes sorted.
-unsafe fn insert_tail<T, F>(v: &mut [T], is_less: &mut F)
-where
-    F: FnMut(&T, &T) -> bool,
-{
+unsafe fn insert_tail<T, F: FnMut(&T, &T) -> bool>(v: &mut [T], is_less: &mut F) {
     if v.len() < 2 {
         intrinsics::abort();
     }
@@ -216,10 +217,11 @@ where
 }
 
 /// Sort `v` assuming `v[..offset]` is already sorted.
-pub fn insertion_sort_shift_left<T, F>(v: &mut [T], offset: usize, is_less: &mut F)
-where
-    F: FnMut(&T, &T) -> bool,
-{
+pub fn insertion_sort_shift_left<T, F: FnMut(&T, &T) -> bool>(
+    v: &mut [T],
+    offset: usize,
+    is_less: &mut F,
+) {
     let len = v.len();
 
     if offset == 0 || offset > len {
@@ -238,10 +240,11 @@ where
 
 /// SAFETY: The caller MUST guarantee that `v_base` is valid for 4 reads and `dest_ptr` is valid
 /// for 4 writes. The result will be stored in `dst[0..4]`.
-pub unsafe fn sort4_stable<T, F>(v_base: *const T, dst: *mut T, is_less: &mut F)
-where
-    F: FnMut(&T, &T) -> bool,
-{
+pub unsafe fn sort4_stable<T, F: FnMut(&T, &T) -> bool>(
+    v_base: *const T,
+    dst: *mut T,
+    is_less: &mut F,
+) {
     // By limiting select to picking pointers, we are guaranteed good cmov code-gen regardless of
     // type T layout. Further this only does 5 instead of 6 comparisons compared to a stable
     // transposition 4 element sorting-network. Also by only operating on pointers, we get optimal
@@ -297,11 +300,12 @@ where
 /// SAFETY: The caller MUST guarantee that `v_base` is valid for 8 reads and writes, `scratch_base`
 /// and `dst` MUST be valid for 8 writes. The result will be stored in `dst[0..8]`.
 #[inline(never)]
-unsafe fn sort8_stable<T, F>(v_base: *mut T, scratch_base: *mut T, dst: *mut T, is_less: &mut F)
-where
-    T: crate::Freeze,
-    F: FnMut(&T, &T) -> bool,
-{
+unsafe fn sort8_stable<T: crate::Freeze, F: FnMut(&T, &T) -> bool>(
+    v_base: *mut T,
+    scratch_base: *mut T,
+    dst: *mut T,
+    is_less: &mut F,
+) {
     // SAFETY: The caller must guarantee that scratch_base is valid for 8 writes, and that v_base is
     // valid for 8 reads.
     unsafe {
@@ -316,15 +320,12 @@ where
 }
 
 #[inline(always)]
-unsafe fn merge_up<T, F>(
+unsafe fn merge_up<T, F: FnMut(&T, &T) -> bool>(
     mut left_src: *const T,
     mut right_src: *const T,
     mut dst: *mut T,
     is_less: &mut F,
-) -> (*const T, *const T, *mut T)
-where
-    F: FnMut(&T, &T) -> bool,
-{
+) -> (*const T, *const T, *mut T) {
     // This is a branchless merge utility function.
     // The equivalent code with a branch would be:
     //
@@ -352,15 +353,12 @@ where
 }
 
 #[inline(always)]
-unsafe fn merge_down<T, F>(
+unsafe fn merge_down<T, F: FnMut(&T, &T) -> bool>(
     mut left_src: *const T,
     mut right_src: *const T,
     mut dst: *mut T,
     is_less: &mut F,
-) -> (*const T, *const T, *mut T)
-where
-    F: FnMut(&T, &T) -> bool,
-{
+) -> (*const T, *const T, *mut T) {
     // This is a branchless merge utility function.
     // The equivalent code with a branch would be:
     //
@@ -395,11 +393,11 @@ where
 ///
 // SAFETY: the caller must guarantee that `dst` is valid for v.len() writes.
 // Also `v.as_ptr` and `dst` must not alias.
-unsafe fn bi_directional_merge_even<T, F>(v: &[T], dst: *mut T, is_less: &mut F)
-where
-    T: crate::Freeze,
-    F: FnMut(&T, &T) -> bool,
-{
+unsafe fn bi_directional_merge_even<T: crate::Freeze, F: FnMut(&T, &T) -> bool>(
+    v: &[T],
+    dst: *mut T,
+    is_less: &mut F,
+) {
     // The caller must guarantee that T cannot modify itself inside is_less.
     // merge_up and merge_down read left and right pointers and potentially modify the stack value
     // they point to, if T has interior mutability. This may leave one or two potential writes to

@@ -65,11 +65,7 @@ fn stable_sort<T, F: FnMut(&T, &T) -> bool>(v: &mut [T], mut is_less: F) {
 }
 
 #[inline(always)]
-fn driftsort<T, F, BufT>(v: &mut [T], is_less: &mut F)
-where
-    F: FnMut(&T, &T) -> bool,
-    BufT: BufGuard<T>,
-{
+fn driftsort<T, F: FnMut(&T, &T) -> bool, BufT: BufGuard<T>>(v: &mut [T], is_less: &mut F) {
     // Arrays of zero-sized types are always all-equal, and thus sorted.
     if T::IS_ZST {
         return;
@@ -100,11 +96,7 @@ where
 // Deliberately don't inline the core logic to ensure the inlined insertion sort i-cache footprint
 // is minimal.
 #[inline(never)]
-fn driftsort_main<T, F, BufT>(v: &mut [T], is_less: &mut F)
-where
-    F: FnMut(&T, &T) -> bool,
-    BufT: BufGuard<T>,
-{
+fn driftsort_main<T, F: FnMut(&T, &T) -> bool, BufT: BufGuard<T>>(v: &mut [T], is_less: &mut F) {
     // Pick whichever is greater:
     //  - alloc len elements up to MAX_FULL_ALLOC_BYTES
     //  - alloc len / 2 elements

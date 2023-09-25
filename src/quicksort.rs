@@ -12,15 +12,13 @@ const PSEUDO_MEDIAN_REC_THRESHOLD: usize = 64;
 ///
 /// `limit` when initialized with `c*log(v.len())` for some c ensures we do not
 /// overflow the stack or go quadratic.
-pub fn stable_quicksort<T, F>(
+pub fn stable_quicksort<T, F: FnMut(&T, &T) -> bool>(
     mut v: &mut [T],
     scratch: &mut [MaybeUninit<T>],
     mut limit: u32,
     mut left_ancestor_pivot: Option<&T>,
     is_less: &mut F,
-) where
-    F: FnMut(&T, &T) -> bool,
-{
+) {
     loop {
         let len = v.len();
 
@@ -83,10 +81,7 @@ pub fn stable_quicksort<T, F>(
 ///
 /// This chooses a pivot by sampling an adaptive amount of points, approximating
 /// the quality of a median of sqrt(n) elements.
-fn choose_pivot<T, F>(v: &[T], is_less: &mut F) -> usize
-where
-    F: FnMut(&T, &T) -> bool,
-{
+fn choose_pivot<T, F: FnMut(&T, &T) -> bool>(v: &[T], is_less: &mut F) -> usize {
     // We use unsafe code and raw pointers here because we're dealing with
     // heavy recursion. Passing safe slices around would involve a lot of
     // branches and function call overhead.
@@ -119,16 +114,13 @@ where
 ///
 /// SAFETY: a, b, c must point to the start of initialized regions of memory of
 /// at least n elements.
-unsafe fn median3_rec<T, F>(
+unsafe fn median3_rec<T, F: FnMut(&T, &T) -> bool>(
     mut a: *const T,
     mut b: *const T,
     mut c: *const T,
     n: usize,
     is_less: &mut F,
-) -> *const T
-where
-    F: FnMut(&T, &T) -> bool,
-{
+) -> *const T {
     // SAFETY: a, b, c still point to initialized regions of n / 8 elements,
     // by the exact same logic as in choose_pivot.
     unsafe {
@@ -146,10 +138,7 @@ where
 ///
 /// SAFETY: a, b, c must be valid initialized elements.
 #[inline(always)]
-fn median3<T, F>(a: &T, b: &T, c: &T, is_less: &mut F) -> *const T
-where
-    F: FnMut(&T, &T) -> bool,
-{
+fn median3<T, F: FnMut(&T, &T) -> bool>(a: &T, b: &T, c: &T, is_less: &mut F) -> *const T {
     // Compiler tends to make this branchless when sensible, and avoids the
     // third comparison when not.
     let x = is_less(a, b);
@@ -176,15 +165,12 @@ where
 ///
 /// If `is_less` is not a strict total order or panics, `scratch.len() < v.len()`,
 /// or `pivot_pos >= v.len()`, the result and `v`'s state is sound but unspecified.
-fn stable_partition<T, F>(
+fn stable_partition<T, F: FnMut(&T, &T) -> bool>(
     v: &mut [T],
     scratch: &mut [MaybeUninit<T>],
     pivot_pos: usize,
     is_less: &mut F,
-) -> usize
-where
-    F: FnMut(&T, &T) -> bool,
-{
+) -> usize {
     let num_lt = T::partition_fill_scratch(v, scratch, pivot_pos, is_less);
 
     // SAFETY: partition_fill_scratch guarantees that scratch is initialized
@@ -213,27 +199,22 @@ trait StablePartitionTypeImpl: Sized {
     /// Performs the same operation as [`stable_partition`], except it stores the
     /// permuted elements as copies in `scratch`, with the >= partition in
     /// reverse order.
-    fn partition_fill_scratch<F>(
+    fn partition_fill_scratch<F: FnMut(&Self, &Self) -> bool>(
         v: &[Self],
         scratch: &mut [MaybeUninit<Self>],
         pivot_pos: usize,
         is_less: &mut F,
-    ) -> usize
-    where
-        F: FnMut(&Self, &Self) -> bool;
+    ) -> usize;
 }
 
 impl<T> StablePartitionTypeImpl for T {
     /// See [`StablePartitionTypeImpl::partition_fill_scratch`].
-    default fn partition_fill_scratch<F>(
+    default fn partition_fill_scratch<F: FnMut(&Self, &Self) -> bool>(
         v: &[T],
         scratch: &mut [MaybeUninit<T>],
         pivot_pos: usize,
         is_less: &mut F,
-    ) -> usize
-    where
-        F: FnMut(&Self, &Self) -> bool,
-    {
+    ) -> usize {
         let len = v.len();
         let v_base = v.as_ptr();
         let scratch_base = MaybeUninit::slice_as_mut_ptr(scratch);
@@ -309,15 +290,12 @@ where
     (): crate::IsTrue<{ mem::size_of::<T>() <= (mem::size_of::<u64>() * 2) }>,
 {
     /// See [`StablePartitionTypeImpl::partition_fill_scratch`].
-    fn partition_fill_scratch<F>(
+    fn partition_fill_scratch<F: FnMut(&Self, &Self) -> bool>(
         v: &[T],
         scratch: &mut [MaybeUninit<T>],
         pivot_pos: usize,
         is_less: &mut F,
-    ) -> usize
-    where
-        F: FnMut(&Self, &Self) -> bool,
-    {
+    ) -> usize {
         let len = v.len();
         let v_base = v.as_ptr();
         let scratch_base = MaybeUninit::slice_as_mut_ptr(scratch);
