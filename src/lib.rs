@@ -124,7 +124,8 @@ where
     let scratch_slice =
         unsafe { slice::from_raw_parts_mut(buf.mut_ptr() as *mut MaybeUninit<T>, buf.capacity()) };
 
-    drift::sort(v, scratch_slice, false, is_less);
+    let eager_sort = false;
+    drift::sort(v, scratch_slice, eager_sort, is_less);
 }
 
 fn stable_quicksort<T, F: FnMut(&T, &T) -> bool>(
