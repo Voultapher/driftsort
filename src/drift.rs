@@ -2,7 +2,9 @@ use core::cmp;
 use core::intrinsics;
 use core::mem::MaybeUninit;
 
+use crate::merge::merge;
 use crate::smallsort::SmallSortTypeImpl;
+use crate::stable_quicksort;
 use crate::DriftsortRun;
 
 // Lazy logical runs as in Glidesort.
@@ -22,12 +24,12 @@ fn logical_merge<T, F: FnMut(&T, &T) -> bool>(
     let can_fit_in_scratch = len <= scratch.len();
     if !can_fit_in_scratch || left.sorted() || right.sorted() {
         if !left.sorted() {
-            crate::stable_quicksort(&mut v[..left.len()], scratch, is_less);
+            stable_quicksort(&mut v[..left.len()], scratch, is_less);
         }
         if !right.sorted() {
-            crate::stable_quicksort(&mut v[left.len()..], scratch, is_less);
+            stable_quicksort(&mut v[left.len()..], scratch, is_less);
         }
-        crate::physical_merge(v, scratch, left.len(), is_less);
+        merge(v, scratch, left.len(), is_less);
 
         DriftsortRun::new_sorted(len)
     } else {
@@ -206,7 +208,7 @@ pub fn sort<T, F: FnMut(&T, &T) -> bool>(
     }
 
     if !prev_run.sorted() {
-        crate::stable_quicksort(v, scratch, is_less);
+        stable_quicksort(v, scratch, is_less);
     }
 }
 

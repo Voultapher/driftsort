@@ -127,15 +127,6 @@ where
     drift::sort(v, scratch_slice, false, is_less);
 }
 
-fn physical_merge<T, F: FnMut(&T, &T) -> bool>(
-    v: &mut [T],
-    scratch: &mut [MaybeUninit<T>],
-    mid: usize,
-    is_less: &mut F,
-) {
-    merge::merge(v, scratch, mid, is_less)
-}
-
 fn stable_quicksort<T, F: FnMut(&T, &T) -> bool>(
     v: &mut [T],
     scratch: &mut [MaybeUninit<T>],
