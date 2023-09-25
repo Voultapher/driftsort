@@ -19,6 +19,7 @@ use core::slice;
 
 mod drift;
 mod merge;
+mod pivot;
 mod quicksort;
 mod smallsort;
 

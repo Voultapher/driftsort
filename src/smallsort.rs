@@ -11,7 +11,7 @@ use core::ptr;
 
 // Use a trait to focus code-gen on only the parts actually relevant for the type. Avoid generating
 // LLVM-IR for the sorting-network and median-networks for types that don't qualify.
-pub(crate) trait SmallSortTypeImpl: Sized {
+pub trait SmallSortTypeImpl: Sized {
     const MAX_LEN_SMALL_SORT: usize;
 
     /// Sorts `v` using strategies optimized for small sizes.
@@ -36,7 +36,7 @@ impl<T> SmallSortTypeImpl for T {
     }
 }
 
-pub(crate) const MIN_SMALL_SORT_SCRATCH_LEN: usize = i32::MAX_LEN_SMALL_SORT + 16;
+pub const MIN_SMALL_SORT_SCRATCH_LEN: usize = i32::MAX_LEN_SMALL_SORT + 16;
 
 impl<T> SmallSortTypeImpl for T
 where
