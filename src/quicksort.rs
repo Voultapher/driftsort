@@ -98,12 +98,13 @@ where
         let v_base = v.as_ptr();
         let len = v.len();
         let len_div_8 = len / 8;
+
         let a = v_base; // [0, floor(n/8))
         let b = v_base.add(len_div_8 * 4); // [4*floor(n/8), 5*floor(n/8))
         let c = v_base.add(len_div_8 * 7); // [7*floor(n/8), 8*floor(n/8))
 
         if len < PSEUDO_MEDIAN_REC_THRESHOLD {
-            median3(a, b, c, is_less).sub_ptr(v_base)
+            median3(&*a, &*b, &*c, is_less).sub_ptr(v_base)
         } else {
             median3_rec(a, b, c, len_div_8, is_less).sub_ptr(v_base)
         }
@@ -137,7 +138,7 @@ where
             b = median3_rec(b, b.add(n8 * 4), b.add(n8 * 7), n8, is_less);
             c = median3_rec(c, c.add(n8 * 4), c.add(n8 * 7), n8, is_less);
         }
-        median3(a, b, c, is_less)
+        median3(&*a, &*b, &*c, is_less)
     }
 }
 
@@ -145,29 +146,27 @@ where
 ///
 /// SAFETY: a, b, c must be valid initialized elements.
 #[inline(always)]
-unsafe fn median3<T, F>(a: *const T, b: *const T, c: *const T, is_less: &mut F) -> *const T
+fn median3<T, F>(a: &T, b: &T, c: &T, is_less: &mut F) -> *const T
 where
     F: FnMut(&T, &T) -> bool,
 {
     // Compiler tends to make this branchless when sensible, and avoids the
     // third comparison when not.
-    unsafe {
-        let x = is_less(&*a, &*b);
-        let y = is_less(&*a, &*c);
-        if x == y {
-            // If x=y=0 then b, c <= a. In this case we want to return max(b, c).
-            // If x=y=1 then a < b, c. In this case we want to return min(b, c).
-            // By toggling the outcome of b < c using XOR x we get this behavior.
-            let z = is_less(&*b, &*c);
-            if z ^ x {
-                c
-            } else {
-                b
-            }
+    let x = is_less(a, b);
+    let y = is_less(a, c);
+    if x == y {
+        // If x=y=0 then b, c <= a. In this case we want to return max(b, c).
+        // If x=y=1 then a < b, c. In this case we want to return min(b, c).
+        // By toggling the outcome of b < c using XOR x we get this behavior.
+        let z = is_less(b, c);
+        if z ^ x {
+            c
         } else {
-            // Either c <= a < b or b <= a < c, thus a is our median.
-            a
+            b
         }
+    } else {
+        // Either c <= a < b or b <= a < c, thus a is our median.
+        a
     }
 }
 
