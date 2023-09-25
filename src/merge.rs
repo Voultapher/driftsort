@@ -4,10 +4,12 @@ use core::ptr;
 
 /// Merges non-decreasing runs `v[..mid]` and `v[mid..]` using `buf` as temporary storage, and
 /// stores the result into `v[..]`.
-pub fn merge<T, F>(v: &mut [T], scratch: &mut [MaybeUninit<T>], mid: usize, is_less: &mut F)
-where
-    F: FnMut(&T, &T) -> bool,
-{
+pub fn merge<T, F: FnMut(&T, &T) -> bool>(
+    v: &mut [T],
+    scratch: &mut [MaybeUninit<T>],
+    mid: usize,
+    is_less: &mut F,
+) {
     let len = v.len();
 
     if mid == 0 || mid >= len || scratch.len() < cmp::min(mid, len - mid) {

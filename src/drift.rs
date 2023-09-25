@@ -253,10 +253,7 @@ fn create_run<T, F: FnMut(&T, &T) -> bool>(
 ///
 /// Returns the length of the run, and a bool that is false when the run
 /// is ascending, and true if the run strictly descending.
-fn find_existing_run<T, F>(v: &[T], is_less: &mut F) -> (usize, bool)
-where
-    F: FnMut(&T, &T) -> bool,
-{
+fn find_existing_run<T, F: FnMut(&T, &T) -> bool>(v: &[T], is_less: &mut F) -> (usize, bool) {
     let len = v.len();
     if len < 2 {
         return (len, false);
