@@ -20,7 +20,7 @@ pub fn stable_quicksort<T, F: FnMut(&T, &T) -> bool>(
     loop {
         let len = v.len();
 
-        if len <= T::MAX_LEN_SMALL_SORT {
+        if len <= T::SMALL_SORT_THRESHOLD {
             T::sort_small(v, scratch, is_less);
             return;
         }
