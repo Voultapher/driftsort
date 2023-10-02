@@ -125,7 +125,7 @@ trait StablePartitionTypeImpl: Sized {
 
 impl<T> StablePartitionTypeImpl for T {
     /// See [`StablePartitionTypeImpl::partition_fill_scratch`].
-    default fn partition_fill_scratch<F: FnMut(&Self, &Self) -> bool>(
+    default fn partition_fill_scratch<F: FnMut(&T, &T) -> bool>(
         v: &[T],
         scratch: &mut [MaybeUninit<T>],
         pivot_pos: usize,
@@ -206,7 +206,7 @@ where
     (): crate::IsTrue<{ mem::size_of::<T>() <= (mem::size_of::<u64>() * 2) }>,
 {
     /// See [`StablePartitionTypeImpl::partition_fill_scratch`].
-    fn partition_fill_scratch<F: FnMut(&Self, &Self) -> bool>(
+    fn partition_fill_scratch<F: FnMut(&T, &T) -> bool>(
         v: &[T],
         scratch: &mut [MaybeUninit<T>],
         pivot_pos: usize,
