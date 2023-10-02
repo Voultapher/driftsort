@@ -26,8 +26,8 @@ impl<T> SmallSortTypeImpl for T {
     default const MAX_LEN_SMALL_SORT: usize = 16;
 
     default fn sort_small<F: FnMut(&T, &T) -> bool>(
-        v: &mut [Self],
-        _scratch: &mut [MaybeUninit<Self>],
+        v: &mut [T],
+        _scratch: &mut [MaybeUninit<T>],
         is_less: &mut F,
     ) {
         if v.len() >= 2 {
@@ -46,8 +46,8 @@ where
     const MAX_LEN_SMALL_SORT: usize = 20;
 
     fn sort_small<F: FnMut(&T, &T) -> bool>(
-        v: &mut [Self],
-        scratch: &mut [MaybeUninit<Self>],
+        v: &mut [T],
+        scratch: &mut [MaybeUninit<T>],
         is_less: &mut F,
     ) {
         let len = v.len();
