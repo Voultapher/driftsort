@@ -124,7 +124,7 @@ pub fn sort<T, F: FnMut(&T, &T) -> bool>(
     // as our threshold, as we will call small_sort on any runs smaller than this.
     const MIN_MERGE_SLICE_LEN: usize = 32;
     let min_good_run_len = if eager_sort {
-        T::MAX_LEN_SMALL_SORT
+        T::SMALL_SORT_THRESHOLD
     } else if len <= (MIN_MERGE_SLICE_LEN * MIN_MERGE_SLICE_LEN) {
         MIN_MERGE_SLICE_LEN
     } else {

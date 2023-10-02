@@ -12,7 +12,7 @@ use core::ptr;
 // Use a trait to focus code-gen on only the parts actually relevant for the type. Avoid generating
 // LLVM-IR for the sorting-network and median-networks for types that don't qualify.
 pub trait SmallSortTypeImpl: Sized {
-    const MAX_LEN_SMALL_SORT: usize;
+    const SMALL_SORT_THRESHOLD: usize;
 
     /// Sorts `v` using strategies optimized for small sizes.
     fn sort_small<F: FnMut(&Self, &Self) -> bool>(
@@ -23,7 +23,7 @@ pub trait SmallSortTypeImpl: Sized {
 }
 
 impl<T> SmallSortTypeImpl for T {
-    default const MAX_LEN_SMALL_SORT: usize = 16;
+    default const SMALL_SORT_THRESHOLD: usize = 16;
 
     default fn sort_small<F: FnMut(&T, &T) -> bool>(
         v: &mut [T],
@@ -36,14 +36,14 @@ impl<T> SmallSortTypeImpl for T {
     }
 }
 
-pub const MIN_SMALL_SORT_SCRATCH_LEN: usize = i32::MAX_LEN_SMALL_SORT + 16;
+pub const MIN_SMALL_SORT_SCRATCH_LEN: usize = i32::SMALL_SORT_THRESHOLD + 16;
 
 impl<T> SmallSortTypeImpl for T
 where
     T: crate::Freeze,
     (): crate::IsTrue<{ mem::size_of::<T>() <= 96 }>,
 {
-    const MAX_LEN_SMALL_SORT: usize = 20;
+    const SMALL_SORT_THRESHOLD: usize = 20;
 
     fn sort_small<F: FnMut(&T, &T) -> bool>(
         v: &mut [T],
@@ -70,14 +70,14 @@ where
                         // SAFETY: scratch_base is valid and has enough space.
                         sort8_stable(
                             v_base,
-                            scratch_base.add(T::MAX_LEN_SMALL_SORT),
+                            scratch_base.add(T::SMALL_SORT_THRESHOLD),
                             scratch_base,
                             is_less,
                         );
 
                         sort8_stable(
                             v_base.add(len_div_2),
-                            scratch_base.add(T::MAX_LEN_SMALL_SORT + 8),
+                            scratch_base.add(T::SMALL_SORT_THRESHOLD + 8),
                             scratch_base.add(len_div_2),
                             is_less,
                         );
