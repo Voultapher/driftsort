@@ -203,7 +203,7 @@ impl<T> StablePartitionTypeImpl for T {
 impl<T> StablePartitionTypeImpl for T
 where
     T: Copy,
-    (): crate::IsTrue<{ mem::size_of::<T>() <= (mem::size_of::<u64>() * 2) }>,
+    (): crate::IsTrue<{ mem::size_of::<T>() <= 16 }>,
 {
     /// See [`StablePartitionTypeImpl::partition_fill_scratch`].
     fn partition_fill_scratch<F: FnMut(&T, &T) -> bool>(
@@ -220,6 +220,13 @@ where
             core::intrinsics::abort()
         }
 
+        // Manually unrolled as micro-optimization as only x86 gets auto-unrolling but not Arm.
+        let unroll_len = if const { mem::size_of::<T>() <= 8 } {
+            4
+        } else {
+            2
+        };
+
         unsafe {
             // SAFETY: exactly the same invariants and logic as the
             // non-specialized impl. The conditional store being replaced by a
@@ -229,12 +236,13 @@ where
             // naive loop unrolling where the exact same loop body is just
             // repeated.
             let pivot = v_base.add(pivot_pos);
+            let mut scan = v_base;
             let mut pivot_in_scratch = ptr::null_mut();
             let mut num_lt = 0;
             let mut scratch_rev = scratch_base.add(len);
+
             macro_rules! loop_body {
-                ($i:expr) => {
-                    let scan = v_base.add($i);
+                () => {{
                     scratch_rev = scratch_rev.sub(1);
 
                     let is_less_than_pivot = is_less(&*scan, &*pivot);
@@ -253,24 +261,23 @@ where
                     }
 
                     num_lt += is_less_than_pivot as usize;
-                };
+                    scan = scan.add(1);
+                    _ = scan;
+                }};
             }
 
-            /// To ensure good performance across platforms we explicitly unroll using a
-            /// fixed-size inner loop. We do not simply call the loop body multiple times as
-            /// this increases compile times significantly more, and the compiler unrolls
-            /// a fixed loop just as well, if it is sensible.
-            const UNROLL_LEN: usize = 4;
-            let mut offset = 0;
-            for _ in 0..(len / UNROLL_LEN) {
-                for unroll_i in 0..UNROLL_LEN {
-                    loop_body!(offset + unroll_i);
+            // We do not simply call the loop body multiple times as this increases compile
+            // times significantly more, and the compiler unrolls a fixed loop just as well, if it
+            // is sensible.
+            let unroll_end = v_base.add(len - (unroll_len - 1));
+            while scan < unroll_end {
+                for _ in 0..unroll_len {
+                    loop_body!();
                 }
-                offset += UNROLL_LEN;
             }
 
-            for i in 0..(len % UNROLL_LEN) {
-                loop_body!(offset + i);
+            while scan < v_base.add(len) {
+                loop_body!();
             }
 
             // SAFETY: if T has interior mutability our copy in scratch can be
