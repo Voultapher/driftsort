@@ -193,6 +193,43 @@ impl<T> StablePartitionTypeImpl for T {
     }
 }
 
+/// This construct works around a couple of issues with auto unrolling as well as manual unrolling.
+/// Auto unrolling as tested with rustc 1.75 is somewhat run-time and binary-size inefficient,
+/// because it performs additional math to calculate the loop end, which we can avoid by
+/// precomputing the loop end. Also auto unrolling only happens on x86 but not on Arm where doing so
+/// for the Firestorm micro-architecture yields a 15+% performance improvement. Manual unrolling via
+/// repeated code has a large negative impact on debug compile-times, and unrolling via `for _ in
+/// 0..UNROLL_LEN` has a 10-20% perf penalty when compiling with `opt-level=s` which is deemed
+/// unacceptable for such a crucial component of the sort implementation.
+trait UnrollHelper: Sized {
+    const UNROLL_LEN: usize;
+
+    unsafe fn unrolled_loop_body<F: FnMut()>(loop_body: F);
+}
+
+impl<T> UnrollHelper for T {
+    default const UNROLL_LEN: usize = 2;
+
+    default unsafe fn unrolled_loop_body<F: FnMut()>(mut loop_body: F) {
+        loop_body();
+        loop_body();
+    }
+}
+
+impl<T> UnrollHelper for T
+where
+    (): crate::IsTrue<{ mem::size_of::<T>() <= 8 }>,
+{
+    const UNROLL_LEN: usize = 4;
+
+    unsafe fn unrolled_loop_body<F: FnMut()>(mut loop_body: F) {
+        loop_body();
+        loop_body();
+        loop_body();
+        loop_body();
+    }
+}
+
 /// Specialization for small types, through traits to not invoke compile time
 /// penalties for loop unrolling when not used.
 ///
@@ -202,7 +239,7 @@ impl<T> StablePartitionTypeImpl for T {
 /// store. And explicit loop unrolling is also often very beneficial.
 impl<T> StablePartitionTypeImpl for T
 where
-    T: Copy,
+    T: Copy + crate::Freeze,
     (): crate::IsTrue<{ mem::size_of::<T>() <= 16 }>,
 {
     /// See [`StablePartitionTypeImpl::partition_fill_scratch`].
@@ -220,13 +257,6 @@ where
             core::intrinsics::abort()
         }
 
-        // Manually unrolled as micro-optimization as only x86 gets auto-unrolling but not Arm.
-        let unroll_len = if const { mem::size_of::<T>() <= 8 } {
-            4
-        } else {
-            2
-        };
-
         unsafe {
             // SAFETY: exactly the same invariants and logic as the
             // non-specialized impl. The conditional store being replaced by a
@@ -237,7 +267,6 @@ where
             // repeated.
             let pivot = v_base.add(pivot_pos);
             let mut scan = v_base;
-            let mut pivot_in_scratch = ptr::null_mut();
             let mut num_lt = 0;
             let mut scratch_rev = scratch_base.add(len);
 
@@ -249,41 +278,21 @@ where
                     ptr::copy_nonoverlapping(scan, scratch_base.add(num_lt), 1);
                     ptr::copy_nonoverlapping(scan, scratch_rev.add(num_lt), 1);
 
-                    // Save pivot location in scratch for later.
-                    if const { crate::has_direct_interior_mutability::<T>() }
-                        && intrinsics::unlikely(scan as *const T == pivot)
-                    {
-                        pivot_in_scratch = if is_less_than_pivot {
-                            scratch_base.add(num_lt) // i + num_lt
-                        } else {
-                            scratch_rev.add(num_lt) // len - (i + 1) + num_lt = len - 1 - num_ge
-                        };
-                    }
-
                     num_lt += is_less_than_pivot as usize;
                     scan = scan.add(1);
-                    _ = scan;
                 }};
             }
 
             // We do not simply call the loop body multiple times as this increases compile
             // times significantly more, and the compiler unrolls a fixed loop just as well, if it
             // is sensible.
-            let unroll_end = v_base.add(len - (unroll_len - 1));
+            let unroll_end = v_base.add(len - (T::UNROLL_LEN - 1));
             while scan < unroll_end {
-                for _ in 0..unroll_len {
-                    loop_body!();
-                }
+                T::unrolled_loop_body(|| loop_body!());
             }
 
             while scan < v_base.add(len) {
                 loop_body!();
-            }
-
-            // SAFETY: if T has interior mutability our copy in scratch can be
-            // outdated, update it.
-            if const { crate::has_direct_interior_mutability::<T>() } {
-                ptr::copy_nonoverlapping(pivot, pivot_in_scratch, 1);
             }
 
             num_lt
