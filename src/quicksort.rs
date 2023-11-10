@@ -193,6 +193,16 @@ impl<T> StablePartitionTypeImpl for T {
     }
 }
 
+struct PartitionState<T> {
+    // The current element that is being looked at, scans left to right through slice.
+    scan: *const T,
+    // Counts the number of elements that compared less-than, also works around:
+    // https://github.com/rust-lang/rust/issues/117128
+    num_lt: usize,
+    // Reverse scratch output pointer.
+    scratch_rev: *mut T,
+}
+
 /// This construct works around a couple of issues with auto unrolling as well as manual unrolling.
 /// Auto unrolling as tested with rustc 1.75 is somewhat run-time and binary-size inefficient,
 /// because it performs additional math to calculate the loop end, which we can avoid by
@@ -204,15 +214,22 @@ impl<T> StablePartitionTypeImpl for T {
 trait UnrollHelper: Sized {
     const UNROLL_LEN: usize;
 
-    unsafe fn unrolled_loop_body<F: FnMut()>(loop_body: F);
+    unsafe fn unrolled_loop_body<F: FnMut(&mut PartitionState<Self>)>(
+        loop_body: F,
+        state: &mut PartitionState<Self>,
+    );
 }
 
 impl<T> UnrollHelper for T {
     default const UNROLL_LEN: usize = 2;
 
-    default unsafe fn unrolled_loop_body<F: FnMut()>(mut loop_body: F) {
-        loop_body();
-        loop_body();
+    #[inline(always)]
+    default unsafe fn unrolled_loop_body<F: FnMut(&mut PartitionState<T>)>(
+        mut loop_body: F,
+        state: &mut PartitionState<T>,
+    ) {
+        loop_body(state);
+        loop_body(state);
     }
 }
 
@@ -222,11 +239,15 @@ where
 {
     const UNROLL_LEN: usize = 4;
 
-    unsafe fn unrolled_loop_body<F: FnMut()>(mut loop_body: F) {
-        loop_body();
-        loop_body();
-        loop_body();
-        loop_body();
+    #[inline(always)]
+    unsafe fn unrolled_loop_body<F: FnMut(&mut PartitionState<T>)>(
+        mut loop_body: F,
+        state: &mut PartitionState<T>,
+    ) {
+        loop_body(state);
+        loop_body(state);
+        loop_body(state);
+        loop_body(state);
     }
 }
 
@@ -266,36 +287,37 @@ where
             // naive loop unrolling where the exact same loop body is just
             // repeated.
             let pivot = v_base.add(pivot_pos);
-            let mut scan = v_base;
-            let mut num_lt = 0;
-            let mut scratch_rev = scratch_base.add(len);
 
-            macro_rules! loop_body {
-                () => {{
-                    scratch_rev = scratch_rev.sub(1);
+            let mut loop_body = |state: &mut PartitionState<T>| {
+                state.scratch_rev = state.scratch_rev.sub(1);
 
-                    let is_less_than_pivot = is_less(&*scan, &*pivot);
-                    ptr::copy_nonoverlapping(scan, scratch_base.add(num_lt), 1);
-                    ptr::copy_nonoverlapping(scan, scratch_rev.add(num_lt), 1);
+                let is_less_than_pivot = is_less(&*state.scan, &*pivot);
+                ptr::copy_nonoverlapping(state.scan, scratch_base.add(state.num_lt), 1);
+                ptr::copy_nonoverlapping(state.scan, state.scratch_rev.add(state.num_lt), 1);
 
-                    num_lt += is_less_than_pivot as usize;
-                    scan = scan.add(1);
-                }};
-            }
+                state.num_lt += is_less_than_pivot as usize;
+                state.scan = state.scan.add(1);
+            };
+
+            let mut state = PartitionState {
+                scan: v_base,
+                num_lt: 0,
+                scratch_rev: scratch_base.add(len),
+            };
 
             // We do not simply call the loop body multiple times as this increases compile
             // times significantly more, and the compiler unrolls a fixed loop just as well, if it
             // is sensible.
             let unroll_end = v_base.add(len - (T::UNROLL_LEN - 1));
-            while scan < unroll_end {
-                T::unrolled_loop_body(|| loop_body!());
+            while state.scan < unroll_end {
+                T::unrolled_loop_body(&mut loop_body, &mut state);
             }
 
-            while scan < v_base.add(len) {
-                loop_body!();
+            while state.scan < v_base.add(len) {
+                loop_body(&mut state);
             }
 
-            num_lt
+            state.num_lt
         }
     }
 }
