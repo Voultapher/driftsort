@@ -165,11 +165,12 @@ impl<T> StablePartitionTypeImpl for T {
                 scratch_rev = scratch_rev.sub(1);
 
                 let is_less_than_pivot = is_less(&*scan, &*pivot);
-                let dst = if is_less_than_pivot {
-                    scratch_base.add(num_lt) // i + num_lt
+                let dst_base = if is_less_than_pivot {
+                    scratch_base // i + num_lt
                 } else {
-                    scratch_rev.add(num_lt) // len - (i + 1) + num_lt = len - 1 - num_ge
+                    scratch_rev // len - (i + 1) + num_lt = len - 1 - num_ge
                 };
+                let dst = dst_base.add(num_lt);
 
                 // Save pivot location in scratch for later.
                 if const { crate::has_direct_interior_mutability::<T>() }
@@ -292,8 +293,12 @@ where
                 state.scratch_rev = state.scratch_rev.sub(1);
 
                 let is_less_than_pivot = is_less(&*state.scan, &*pivot);
-                ptr::copy_nonoverlapping(state.scan, scratch_base.add(state.num_lt), 1);
-                ptr::copy_nonoverlapping(state.scan, state.scratch_rev.add(state.num_lt), 1);
+                let dst_base = if is_less_than_pivot {
+                    scratch_base // i + num_lt
+                } else {
+                    state.scratch_rev // len - (i + 1) + num_lt = len - 1 - num_ge
+                };
+                ptr::copy_nonoverlapping(state.scan, dst_base.add(state.num_lt), 1);
 
                 state.num_lt += is_less_than_pivot as usize;
                 state.scan = state.scan.add(1);
