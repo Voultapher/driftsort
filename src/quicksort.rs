@@ -254,11 +254,6 @@ where
 
 /// Specialization for small types, through traits to not invoke compile time
 /// penalties for loop unrolling when not used.
-///
-/// Benchmarks show that for small types simply storing to *both* potential
-/// destinations is more efficient than a conditional store. It is also less at
-/// risk of having the compiler generating a branch instead of conditional
-/// store. And explicit loop unrolling is also often very beneficial.
 impl<T> StablePartitionTypeImpl for T
 where
     T: Copy + crate::Freeze,
@@ -280,13 +275,8 @@ where
         }
 
         unsafe {
-            // SAFETY: exactly the same invariants and logic as the
-            // non-specialized impl. The conditional store being replaced by a
-            // double copy changes nothing, on all but the final iteration the
-            // bad write will simply be overwritten by a later iteration, and on
-            // the final iteration we write to the same index twice. And we do
-            // naive loop unrolling where the exact same loop body is just
-            // repeated.
+            // SAFETY: exactly the same invariants and logic as the non-specialized impl. And we do
+            // naive loop unrolling where the exact same loop body is just repeated.
             let pivot = v_base.add(pivot_pos);
 
             let mut loop_body = |state: &mut PartitionState<T>| {
