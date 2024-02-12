@@ -1,4 +1,4 @@
-#![allow(incomplete_features)]
+#![allow(incomplete_features, internal_features)]
 #![feature(
     ptr_sub_ptr,
     maybe_uninit_slice,

@@ -41,7 +41,6 @@ pub const MIN_SMALL_SORT_SCRATCH_LEN: usize = i32::SMALL_SORT_THRESHOLD + 16;
 impl<T> SmallSortTypeImpl for T
 where
     T: crate::Freeze,
-    (): crate::IsTrue<{ mem::size_of::<T>() <= 96 }>,
 {
     const SMALL_SORT_THRESHOLD: usize = 20;
 
