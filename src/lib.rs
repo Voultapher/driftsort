@@ -117,7 +117,11 @@ fn driftsort_main<T, F: FnMut(&T, &T) -> bool, BufT: BufGuard<T>>(v: &mut [T], i
     let scratch_slice =
         unsafe { slice::from_raw_parts_mut(buf.mut_ptr() as *mut MaybeUninit<T>, buf.capacity()) };
 
-    let eager_sort = false;
+    // Using the hybrid quick + merge-sort has performance issues with the transition from insertion
+    // sort to main loop. A more gradual and smoother transition can be had by using an always eager
+    // merge approach as long as it can be served by a single merge.
+    use crate::smallsort::SmallSortTypeImpl;
+    let eager_sort = len <= T::SMALL_SORT_THRESHOLD * 2;
     drift::sort(v, scratch_slice, eager_sort, is_less);
 }
 
