@@ -116,20 +116,18 @@ pub fn sort<T, F: FnMut(&T, &T) -> bool>(
     }
     let scale_factor = merge_tree_scale_factor(len);
 
-    // It's important to have a relatively high entry barrier for pre-sorted
-    // runs, as the presence of a single such run will force on average several
-    // merge operations and shrink the maximum quicksort size a lot. For that
-    // reason we use sqrt(len) as our pre-sorted run threshold, but no smaller
-    // than 32. When eagerly sorting we use crate::quicksort::SMALL_SORT_THRESHOLD
-    // as our threshold, as we will call small_sort on any runs smaller than this.
-    const MIN_MERGE_SLICE_LEN: usize = 32;
-    let min_good_run_len = if eager_sort {
-        T::SMALL_SORT_THRESHOLD
-    } else if len <= (MIN_MERGE_SLICE_LEN * MIN_MERGE_SLICE_LEN) {
-        MIN_MERGE_SLICE_LEN
-    } else {
-        sqrt_approx(len)
-    };
+    // It's important to have a relatively high entry barrier for pre-sorted runs, as the presence
+    // of a single such run will force on average several merge operations and shrink the maximum
+    // quicksort size a lot. For that reason we use sqrt(len) as our pre-sorted run threshold, with
+    // SMALL_SORT_THRESHOLD as the lower limit. When eagerly sorting we also use
+    // SMALL_SORT_THRESHOLD as our threshold, as we will call small_sort on any runs smaller than
+    // this.
+    let min_good_run_len =
+        if eager_sort || len <= (T::SMALL_SORT_THRESHOLD * T::SMALL_SORT_THRESHOLD) {
+            T::SMALL_SORT_THRESHOLD
+        } else {
+            sqrt_approx(len)
+        };
 
     // (stack_len, runs, desired_depths) together form a stack maintaining run
     // information for the powersort heuristic. desired_depths[i] is the desired
