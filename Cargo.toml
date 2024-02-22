@@ -15,7 +15,7 @@ test = false
 [dependencies]
 
 [dev-dependencies]
-sort_test_tools = { git = "https://github.com/Voultapher/sort-research-rs", rev = "ed65ed800666c1fb06d93d5f31c8d0add55bf32e", default-features = false }
+sort_test_tools = { git = "https://github.com/Voultapher/sort-research-rs", rev = "9cd351e9e6ded91a45d20c63d66b47f104cad527", default-features = false }
 
 [features]
 default = ["large_test_sizes"]
