@@ -96,15 +96,15 @@ where
 
                         for i in presorted_len..len_div_2 {
                             ptr::copy_nonoverlapping(dst.add(i), src.add(i), 1);
-                            let scratch_slice = &mut *ptr::slice_from_raw_parts_mut(src, i + 1);
-                            insert_tail(scratch_slice, is_less);
+                            insert_tail(src, src.add(i), is_less);
                         }
                     }
 
                     let even_len = len - (len % 2);
 
-                    // See comment in `DropGuard::drop`.
-                    let drop_guard = DropGuard {
+                    // SAFETY: scratch_base is initialized with even_len elements,
+                    // and v_base is large enough to copy to.
+                    let drop_guard = CopyOnDrop {
                         src: scratch_base,
                         dst: v_base,
                         len: even_len,
@@ -128,21 +128,21 @@ where
 
             insertion_sort_shift_left(v, offset, is_less);
         }
+    }
+}
 
-        struct DropGuard<T> {
-            src: *mut T,
-            dst: *mut T,
-            len: usize,
-        }
+struct CopyOnDrop<T> {
+    src: *const T,
+    dst: *mut T,
+    len: usize,
+}
 
-        impl<T> Drop for DropGuard<T> {
-            fn drop(&mut self) {
-                // SAFETY: `src` must hold the original `len` elements of `v` in any order. And dst
-                // must be valid to write `len` elements.
-                unsafe {
-                    ptr::copy_nonoverlapping(self.src, self.dst, self.len);
-                }
-            }
+impl<T> Drop for CopyOnDrop<T> {
+    fn drop(&mut self) {
+        // SAFETY: `src` must contain `len` initialized elements, and dst must
+        // be valid to write `len` elements.
+        unsafe {
+            ptr::copy_nonoverlapping(self.src, self.dst, self.len);
         }
     }
 }
@@ -160,57 +160,40 @@ impl<T> Drop for GapGuard<T> {
     }
 }
 
-/// Inserts `v[v.len() - 1]` into pre-sorted sequence `v[..v.len() - 1]` so that whole `v[..]`
-/// becomes sorted. Returns the insert position.
-/// Inserts `v[v.len() - 1]` into pre-sorted sequence `v[..v.len() - 1]` so that whole `v[..]`
-/// becomes sorted.
-unsafe fn insert_tail<T, F: FnMut(&T, &T) -> bool>(v: &mut [T], is_less: &mut F) {
-    if v.len() < 2 {
-        intrinsics::abort();
+/// Sorts range [begin, tail] assuming [begin, tail) is already sorted.
+/// 
+/// # Safety
+/// begin < tail and p must be valid and initialized for all begin <= p <= tail.
+unsafe fn insert_tail<T, F: FnMut(&T, &T) -> bool>(begin: *mut T, tail: *mut T, is_less: &mut F) {
+    // SAFETY: in-bounds as tail > begin.
+    let mut sift = tail.sub(1);
+    if !is_less(&*tail, &*sift) {
+        return;
     }
 
-    let v_base = v.as_mut_ptr();
-    let i = v.len() - 1;
+    // SAFETY: after this read tail is never read from again, as we only ever
+    // read from sift, sift < tail and we only ever decrease sift. Thus this is
+    // effectively a move, not a copy. Should a panic occur, or we have found
+    // the correct insertion position, gap_guard ensures the element is moved
+    // back into the array.
+    let tmp = ManuallyDrop::new(tail.read());
+    let mut gap_guard = CopyOnDrop { src: &*tmp, dst: tail, len: 1 };
+    
+    loop {
+        // SAFETY: we move sift into the gap (which is valid), and point the
+        // gap guard destination at sift, ensuring that if a panic occurs the
+        // gap is once again filled.
+        ptr::copy_nonoverlapping(sift, gap_guard.dst, 1);
+        gap_guard.dst = sift;
 
-    // SAFETY: caller must ensure v is at least len 2.
-    unsafe {
-        // See insert_head which talks about why this approach is beneficial.
-        let v_i = v_base.add(i);
+        if sift == begin {
+            break;
+        }
 
-        // It's important that we use v_i here. If this check is positive and we continue,
-        // We want to make sure that no other copy of the value was seen by is_less.
-        // Otherwise we would have to copy it back.
-        if is_less(&*v_i, &*v_i.sub(1)) {
-            // It's important, that we use tmp for comparison from now on. As it is the value that
-            // will be copied back. And notionally we could have created a divergence if we copy
-            // back the wrong value.
-            // Intermediate state of the insertion process is always tracked by `gap`, which
-            // serves two purposes:
-            // 1. Protects integrity of `v` from panics in `is_less`.
-            // 2. Fills the remaining gap in `v` in the end.
-            //
-            // Panic safety:
-            //
-            // If `is_less` panics at any point during the process, `gap` will get dropped and
-            // fill the gap in `v` with `tmp`, thus ensuring that `v` still holds every object it
-            // initially held exactly once.
-            let mut gap = GapGuard {
-                pos: v_i.sub(1),
-                value: mem::ManuallyDrop::new(ptr::read(v_i)),
-            };
-            ptr::copy_nonoverlapping(gap.pos, v_i, 1);
-
-            // SAFETY: We know i is at least 1.
-            for j in (0..(i - 1)).rev() {
-                let v_j = v_base.add(j);
-                if !is_less(&*gap.value, &*v_j) {
-                    break;
-                }
-
-                ptr::copy_nonoverlapping(v_j, gap.pos, 1);
-                gap.pos = v_j;
-            }
-            // `gap` gets dropped and thus copies `tmp` into the remaining gap in `v`.
+        // SAFETY: we checked that sift != begin, thus this is in-bounds.
+        sift = sift.sub(1);
+        if !is_less(&tmp, &*sift) {
+            break;
         }
     }
 }
@@ -222,17 +205,19 @@ pub fn insertion_sort_shift_left<T, F: FnMut(&T, &T) -> bool>(
     is_less: &mut F,
 ) {
     let len = v.len();
-
     if offset == 0 || offset > len {
         intrinsics::abort();
     }
-
-    // Shift each element of the unsorted region v[i..] as far left as is needed to make v sorted.
-    for i in offset..len {
-        // SAFETY: we tested that `offset` must be at least 1, so this loop is only entered if len
-        // >= 2.
-        unsafe {
-            insert_tail(&mut v[..=i], is_less);
+    
+    unsafe {
+        // We write this basic loop directly using pointers, as when we use a
+        // for loop LLVM likes to unroll this loop which we do not want.
+        let v_base = v.as_mut_ptr();
+        let v_end = v_base.add(len);
+        let mut tail = v_base.add(offset);
+        while tail != v_end {
+            insert_tail(v_base, tail, is_less);
+            tail = tail.add(1);
         }
     }
 }
