@@ -239,7 +239,11 @@ fn create_run<T, F: FnMut(&T, &T) -> bool>(
         let new_run_len = cmp::min(min_good_run_len, v.len());
 
         if eager_sort {
-            T::sort_small(&mut v[..new_run_len], scratch, is_less);
+            // When eager sorting min_good_run_len = T::SMALL_SORT_THRESHOLD,
+            // which will make stable_quicksort immediately call smallsort. By
+            // not calling the smallsort directly here it can always be inlined
+            // into the quicksort itself, making the recursive base case faster.
+            crate::quicksort::stable_quicksort(&mut v[..new_run_len], scratch, 0, None, is_less);
             DriftsortRun::new_sorted(new_run_len)
         } else {
             DriftsortRun::new_unsorted(new_run_len)
