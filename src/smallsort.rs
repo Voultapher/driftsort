@@ -25,6 +25,7 @@ pub trait SmallSortTypeImpl: Sized {
 impl<T> SmallSortTypeImpl for T {
     default const SMALL_SORT_THRESHOLD: usize = 16;
 
+    #[inline(always)]
     default fn sort_small<F: FnMut(&T, &T) -> bool>(
         v: &mut [T],
         _scratch: &mut [MaybeUninit<T>],
@@ -44,6 +45,7 @@ where
 {
     const SMALL_SORT_THRESHOLD: usize = 20;
 
+    #[inline(always)]
     fn sort_small<F: FnMut(&T, &T) -> bool>(
         v: &mut [T],
         scratch: &mut [MaybeUninit<T>],

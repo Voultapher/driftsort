@@ -10,6 +10,7 @@ use crate::smallsort::SmallSortTypeImpl;
 ///
 /// `limit` when initialized with `c*log(v.len())` for some c ensures we do not
 /// overflow the stack or go quadratic.
+#[inline(never)]
 pub fn stable_quicksort<T, F: FnMut(&T, &T) -> bool>(
     mut v: &mut [T],
     scratch: &mut [MaybeUninit<T>],
