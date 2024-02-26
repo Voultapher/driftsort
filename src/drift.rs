@@ -116,20 +116,18 @@ pub fn sort<T, F: FnMut(&T, &T) -> bool>(
     }
     let scale_factor = merge_tree_scale_factor(len);
 
-    // It's important to have a relatively high entry barrier for pre-sorted
-    // runs, as the presence of a single such run will force on average several
-    // merge operations and shrink the maximum quicksort size a lot. For that
-    // reason we use sqrt(len) as our pre-sorted run threshold, but no smaller
-    // than 32. When eagerly sorting we use crate::quicksort::SMALL_SORT_THRESHOLD
-    // as our threshold, as we will call small_sort on any runs smaller than this.
-    const MIN_MERGE_SLICE_LEN: usize = 32;
-    let min_good_run_len = if eager_sort {
-        T::SMALL_SORT_THRESHOLD
-    } else if len <= (MIN_MERGE_SLICE_LEN * MIN_MERGE_SLICE_LEN) {
-        MIN_MERGE_SLICE_LEN
-    } else {
-        sqrt_approx(len)
-    };
+    // It's important to have a relatively high entry barrier for pre-sorted runs, as the presence
+    // of a single such run will force on average several merge operations and shrink the maximum
+    // quicksort size a lot. For that reason we use sqrt(len) as our pre-sorted run threshold, with
+    // SMALL_SORT_THRESHOLD as the lower limit. When eagerly sorting we also use
+    // SMALL_SORT_THRESHOLD as our threshold, as we will call small_sort on any runs smaller than
+    // this.
+    let min_good_run_len =
+        if eager_sort || len <= (T::SMALL_SORT_THRESHOLD * T::SMALL_SORT_THRESHOLD) {
+            T::SMALL_SORT_THRESHOLD
+        } else {
+            sqrt_approx(len)
+        };
 
     // (stack_len, runs, desired_depths) together form a stack maintaining run
     // information for the powersort heuristic. desired_depths[i] is the desired
@@ -241,7 +239,11 @@ fn create_run<T, F: FnMut(&T, &T) -> bool>(
         let new_run_len = cmp::min(min_good_run_len, v.len());
 
         if eager_sort {
-            T::sort_small(&mut v[..new_run_len], scratch, is_less);
+            // When eager sorting min_good_run_len = T::SMALL_SORT_THRESHOLD,
+            // which will make stable_quicksort immediately call smallsort. By
+            // not calling the smallsort directly here it can always be inlined
+            // into the quicksort itself, making the recursive base case faster.
+            crate::quicksort::stable_quicksort(&mut v[..new_run_len], scratch, 0, None, is_less);
             DriftsortRun::new_sorted(new_run_len)
         } else {
             DriftsortRun::new_unsorted(new_run_len)
