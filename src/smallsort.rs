@@ -39,10 +39,7 @@ impl<T> SmallSortTypeImpl for T {
 
 pub const MIN_SMALL_SORT_SCRATCH_LEN: usize = i32::SMALL_SORT_THRESHOLD + 16;
 
-impl<T> SmallSortTypeImpl for T
-where
-    T: crate::Freeze,
-{
+impl<T: crate::Freeze> SmallSortTypeImpl for T {
     const SMALL_SORT_THRESHOLD: usize = 20;
 
     #[inline(always)]
@@ -51,85 +48,93 @@ where
         scratch: &mut [MaybeUninit<T>],
         is_less: &mut F,
     ) {
-        let len = v.len();
+        sort_small_general(v, scratch, is_less);
+    }
+}
 
-        if len >= 2 {
-            if scratch.len() < MIN_SMALL_SORT_SCRATCH_LEN {
-                intrinsics::abort();
-            }
+fn sort_small_general<T: crate::Freeze, F: FnMut(&T, &T) -> bool>(
+    v: &mut [T],
+    scratch: &mut [MaybeUninit<T>],
+    is_less: &mut F,
+) {
+    let len = v.len();
 
-            let v_base = v.as_mut_ptr();
+    if len >= 2 {
+        if scratch.len() < MIN_SMALL_SORT_SCRATCH_LEN {
+            intrinsics::abort();
+        }
 
-            let offset = if len >= 8 {
-                let len_div_2 = len / 2;
+        let v_base = v.as_mut_ptr();
 
-                // SAFETY: TODO
-                unsafe {
-                    let scratch_base = scratch.as_mut_ptr() as *mut T;
+        let offset = if len >= 8 {
+            let len_div_2 = len / 2;
 
-                    let presorted_len = if len >= 16 {
-                        // SAFETY: scratch_base is valid and has enough space.
-                        sort8_stable(
-                            v_base,
-                            scratch_base.add(T::SMALL_SORT_THRESHOLD),
-                            scratch_base,
-                            is_less,
-                        );
+            // SAFETY: TODO
+            unsafe {
+                let scratch_base = scratch.as_mut_ptr() as *mut T;
 
-                        sort8_stable(
-                            v_base.add(len_div_2),
-                            scratch_base.add(T::SMALL_SORT_THRESHOLD + 8),
-                            scratch_base.add(len_div_2),
-                            is_less,
-                        );
-
-                        8
-                    } else {
-                        // SAFETY: scratch_base is valid and has enough space.
-                        sort4_stable(v_base, scratch_base, is_less);
-                        sort4_stable(v_base.add(len_div_2), scratch_base.add(len_div_2), is_less);
-
-                        4
-                    };
-
-                    for offset in [0, len_div_2] {
-                        let src = scratch_base.add(offset);
-                        let dst = v_base.add(offset);
-
-                        for i in presorted_len..len_div_2 {
-                            ptr::copy_nonoverlapping(dst.add(i), src.add(i), 1);
-                            insert_tail(src, src.add(i), is_less);
-                        }
-                    }
-
-                    let even_len = len - (len % 2);
-
-                    // SAFETY: scratch_base is initialized with even_len elements,
-                    // and v_base is large enough to copy to.
-                    let drop_guard = CopyOnDrop {
-                        src: scratch_base,
-                        dst: v_base,
-                        len: even_len,
-                    };
-
-                    // It's faster to merge directly into `v` and copy over the 'safe' elements of
-                    // `scratch` into v only if there was a panic. This technique is similar to
-                    // ping-pong merging.
-                    bi_directional_merge_even(
-                        &*ptr::slice_from_raw_parts(drop_guard.src, drop_guard.len),
-                        drop_guard.dst,
+                let presorted_len = if len >= 16 {
+                    // SAFETY: scratch_base is valid and has enough space.
+                    sort8_stable(
+                        v_base,
+                        scratch_base.add(T::SMALL_SORT_THRESHOLD),
+                        scratch_base,
                         is_less,
                     );
-                    mem::forget(drop_guard);
 
-                    even_len
+                    sort8_stable(
+                        v_base.add(len_div_2),
+                        scratch_base.add(T::SMALL_SORT_THRESHOLD + 8),
+                        scratch_base.add(len_div_2),
+                        is_less,
+                    );
+
+                    8
+                } else {
+                    // SAFETY: scratch_base is valid and has enough space.
+                    sort4_stable(v_base, scratch_base, is_less);
+                    sort4_stable(v_base.add(len_div_2), scratch_base.add(len_div_2), is_less);
+
+                    4
+                };
+
+                for offset in [0, len_div_2] {
+                    let src = scratch_base.add(offset);
+                    let dst = v_base.add(offset);
+
+                    for i in presorted_len..len_div_2 {
+                        ptr::copy_nonoverlapping(dst.add(i), src.add(i), 1);
+                        insert_tail(src, src.add(i), is_less);
+                    }
                 }
-            } else {
-                1
-            };
 
-            insertion_sort_shift_left(v, offset, is_less);
-        }
+                let even_len = len - (len % 2);
+
+                // SAFETY: scratch_base is initialized with even_len elements,
+                // and v_base is large enough to copy to.
+                let drop_guard = CopyOnDrop {
+                    src: scratch_base,
+                    dst: v_base,
+                    len: even_len,
+                };
+
+                // It's faster to merge directly into `v` and copy over the 'safe' elements of
+                // `scratch` into v only if there was a panic. This technique is similar to
+                // ping-pong merging.
+                bi_directional_merge_even(
+                    &*ptr::slice_from_raw_parts(drop_guard.src, drop_guard.len),
+                    drop_guard.dst,
+                    is_less,
+                );
+                mem::forget(drop_guard);
+
+                even_len
+            }
+        } else {
+            1
+        };
+
+        insertion_sort_shift_left(v, offset, is_less);
     }
 }
 
