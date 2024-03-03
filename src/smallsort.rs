@@ -40,7 +40,12 @@ impl<T> SmallSortTypeImpl for T {
 pub const MIN_SMALL_SORT_SCRATCH_LEN: usize = i32::SMALL_SORT_THRESHOLD + 16;
 
 impl<T: crate::Freeze> SmallSortTypeImpl for T {
-    const SMALL_SORT_THRESHOLD: usize = 20;
+    // From a comparison perspective 20, would be ~2% more efficient for fully random input, but a
+    // smaller threshold implies more partitions with smaller inputs, and choosing 32 yields better
+    // performance overall. Because stable_partition has to account for the pivot, it has nontrivial
+    // control-flow. In addition a larger SMALL_SORT_THRESHOLD yields better results for the
+    // transition from insertion sort main driftsort logic.
+    const SMALL_SORT_THRESHOLD: usize = 32;
 
     #[inline(always)]
     fn sort_small<F: FnMut(&T, &T) -> bool>(

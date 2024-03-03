@@ -32,15 +32,16 @@ pub fn stable_quicksort<T, F: FnMut(&T, &T) -> bool>(
         }
         limit -= 1;
 
+        let pivot_pos = choose_pivot(v, is_less);
+        // SAFETY: choose_pivot promises to return a valid pivot index.
+        unsafe {
+            intrinsics::assume(pivot_pos < v.len());
+        }
+
         // SAFETY: We only access the temporary copy for Freeze types, otherwise
         // self-modifications via `is_less` would not be observed and this would
         // be unsound. Our temporary copy does not escape this scope.
-        let pivot_idx = choose_pivot(v, is_less);
-        // SAFETY: choose_pivot promises to return a valid pivot index.
-        unsafe {
-            intrinsics::assume(pivot_idx < v.len());
-        }
-        let pivot_copy = unsafe { ManuallyDrop::new(ptr::read(&v[pivot_idx])) };
+        let pivot_copy = unsafe { ManuallyDrop::new(ptr::read(&v[pivot_pos])) };
         let pivot_ref = (!has_direct_interior_mutability::<T>()).then_some(&*pivot_copy);
 
         // We choose a pivot, and check if this pivot is equal to our left
@@ -53,17 +54,17 @@ pub fn stable_quicksort<T, F: FnMut(&T, &T) -> bool>(
         // partition operations with pivot p instead of the optimal two.
         let mut perform_equal_partition = false;
         if let Some(la_pivot) = left_ancestor_pivot {
-            perform_equal_partition = !is_less(la_pivot, &v[pivot_idx]);
+            perform_equal_partition = !is_less(la_pivot, &v[pivot_pos]);
         }
 
         let mut left_partition_len = 0;
         if !perform_equal_partition {
-            left_partition_len = stable_partition(v, scratch, pivot_idx, is_less);
+            left_partition_len = stable_partition(v, scratch, pivot_pos, false, is_less);
             perform_equal_partition = left_partition_len == 0;
         }
 
         if perform_equal_partition {
-            let mid_eq = stable_partition(v, scratch, pivot_idx, &mut |a, b| !is_less(b, a));
+            let mid_eq = stable_partition(v, scratch, pivot_pos, true, &mut |a, b| !is_less(b, a));
             v = &mut v[mid_eq..];
             left_ancestor_pivot = None;
             continue;
@@ -86,234 +87,156 @@ fn stable_partition<T, F: FnMut(&T, &T) -> bool>(
     v: &mut [T],
     scratch: &mut [MaybeUninit<T>],
     pivot_pos: usize,
+    pivot_goes_left: bool,
     is_less: &mut F,
 ) -> usize {
-    let num_lt = T::partition_fill_scratch(v, scratch, pivot_pos, is_less);
+    let len = v.len();
 
-    // SAFETY: partition_fill_scratch guarantees that scratch is initialized
-    // with a permuted copy of `v`, and that num_lt <= v.len(). Copying
-    // scratch[0..num_lt] and scratch[num_lt..v.len()] back is thus
-    // sound, as the values in scratch will never be read again, meaning our
-    // copies semantically act as moves, permuting `v`.
+    if intrinsics::unlikely(scratch.len() < len || pivot_pos >= len) {
+        core::intrinsics::abort()
+    }
+
+    let v_base = v.as_ptr();
+    let scratch_base = MaybeUninit::slice_as_mut_ptr(scratch);
+
+    // The core idea is to write the values that compare as less-than to the left side of `scratch`,
+    // while the values that compared as greater or equal than `v[pivot_pos]` go to the right side
+    // of `scratch` in reverse. Most of the inner complexity stems from avoiding self-comparisons
+    // with pivot and delayed pivot hole filling because of non `Freeze` types.
+
+    // Regarding auto unrolling and manual unrolling. Auto unrolling as tested with rustc 1.75 is
+    // somewhat run-time and binary-size inefficient, because it performs additional math to
+    // calculate the loop end, which we can avoid by precomputing the loop end. Also auto unrolling
+    // only happens on x86 but not on Arm where doing so for the Firestorm micro-architecture yields
+    // a 15+% performance improvement. Manual unrolling via repeated code has a large negative
+    // impact on debug compile-times, and unrolling via `for _ in 0..UNROLL_LEN` has a 10-20% perf
+    // penalty when compiling with `opt-level=s` which is deemed unacceptable for such a crucial
+    // component of the sort implementation.
+
+    // SAFETY: we checked that pivot_pos is in-bounds above, and that scratch has length at least
+    // len. As we do binary classification into lt or ge, the invariant num_left + num_right = i
+    // always holds at the start of each iteration. For micro-optimization reasons we write i -
+    // num_left instead of num_right. Since num_left increases by at most 1 each iteration and since
+    // i < len, this proves our destination indices num_left and len - 1 - num_right stay in-bounds,
+    // and are never equal except the final iteration when num_left = len - 1 - (len - 1 - num_left)
+    // = len - 1 - num_right. We write one element to scratch each iteration thus scratch[0..len]
+    // will be initialized with a permutation of v. The body of `loop` has nearly the same semantics
+    // as:
+    // ```
+    // for 0..len {
+    //     state.partition_one(is_less(&*state.scan, &*pivot));
+    // }
+    // ```
+    // Where we treat `state.scan == pivot` specially to avoid calling is_less with the same value.
+    // self comparison is not directly UB or problematic in and by itself, but its possible that
+    // user logic depends on this not occurring. E.g. where the comparison function takes a lock,
+    // which would deadlock.
     unsafe {
-        let len = v.len();
-        let v_base = v.as_mut_ptr();
-        let scratch_base = MaybeUninit::slice_as_mut_ptr(scratch);
+        // SAFETY: exactly the same invariants and logic as the non-specialized impl. And we do
+        // naive loop unrolling where the exact same loop body is just repeated.
+        let pivot = v_base.add(pivot_pos);
 
-        // Copy all the elements < p directly from swap to v.
-        ptr::copy_nonoverlapping(scratch_base, v_base, num_lt);
+        let mut state = PartitionState {
+            scratch_base,
+            scan: v_base,
+            num_left: 0,
+            scratch_rev: scratch_base.add(len),
+        };
+
+        let mut pivot_in_scratch = ptr::null_mut();
+        let mut loop_end_pos = pivot_pos;
+
+        // Ideally this outer loop won't be unrolled, to save binary size.
+        loop {
+            if const { mem::size_of::<T>() <= 16 } {
+                const UNROLL_LEN: usize = 4;
+                let unroll_end = v_base.add(loop_end_pos.saturating_sub(UNROLL_LEN - 1));
+                while state.scan < unroll_end {
+                    state.partition_one(is_less(&*state.scan, &*pivot));
+                    state.partition_one(is_less(&*state.scan, &*pivot));
+                    state.partition_one(is_less(&*state.scan, &*pivot));
+                    state.partition_one(is_less(&*state.scan, &*pivot));
+                }
+            }
+
+            let loop_end = v_base.add(loop_end_pos);
+            while state.scan < loop_end {
+                state.partition_one(is_less(&*state.scan, &*pivot));
+            }
+
+            if loop_end_pos == len {
+                break;
+            }
+
+            // Handle pivot, doing it this way neatly handles type with interior mutability and
+            // avoids self comparison as well as a branch in the inner partition loop.
+            pivot_in_scratch = state.partition_one(pivot_goes_left);
+
+            loop_end_pos = len;
+        }
+
+        // `pivot` must only be copied after all possible modifications to it have been observed.
+        ptr::copy_nonoverlapping(pivot, pivot_in_scratch, 1);
+
+        // SAFETY: partition_fill_scratch guarantees that scratch is initialized with a permuted
+        // copy of `v`, and that num_left <= v.len(). Copying scratch[0..num_left] and
+        // scratch[num_left..v.len()] back is thus sound, as the values in scratch will never be read
+        // again, meaning our copies semantically act as moves, permuting `v`. Copy all the elements
+        // < p directly from swap to v.
+        let v_base = v.as_mut_ptr();
+        ptr::copy_nonoverlapping(scratch_base, v_base, state.num_left);
 
         // Copy the elements >= p in reverse order.
-        for i in 0..len - num_lt {
-            ptr::copy_nonoverlapping(scratch_base.add(len - 1 - i), v_base.add(num_lt + i), 1);
+        for i in 0..len - state.num_left {
+            ptr::copy_nonoverlapping(
+                scratch_base.add(len - 1 - i),
+                v_base.add(state.num_left + i),
+                1,
+            );
         }
 
-        num_lt
-    }
-}
-
-trait StablePartitionTypeImpl: Sized {
-    /// Performs the same operation as [`stable_partition`], except it stores the
-    /// permuted elements as copies in `scratch`, with the >= partition in
-    /// reverse order.
-    fn partition_fill_scratch<F: FnMut(&Self, &Self) -> bool>(
-        v: &[Self],
-        scratch: &mut [MaybeUninit<Self>],
-        pivot_pos: usize,
-        is_less: &mut F,
-    ) -> usize;
-}
-
-impl<T> StablePartitionTypeImpl for T {
-    /// See [`StablePartitionTypeImpl::partition_fill_scratch`].
-    default fn partition_fill_scratch<F: FnMut(&T, &T) -> bool>(
-        v: &[T],
-        scratch: &mut [MaybeUninit<T>],
-        pivot_pos: usize,
-        is_less: &mut F,
-    ) -> usize {
-        let len = v.len();
-        let v_base = v.as_ptr();
-        let scratch_base = MaybeUninit::slice_as_mut_ptr(scratch);
-
-        if intrinsics::unlikely(scratch.len() < len || pivot_pos >= len) {
-            core::intrinsics::abort()
-        }
-
-        unsafe {
-            // Abbreviations: lt == less than, ge == greater or equal.
-            //
-            // SAFETY: we checked that pivot_pos is in-bounds above, and that
-            // scratch has length at least len. As we do binary classification
-            // into lt or ge, the invariant num_lt + num_ge = i always holds at
-            // the start of each iteration. For micro-optimization reasons we
-            // write i - num_lt instead of num_gt. Since num_lt increases by at
-            // most 1 each iteration and since i < len, this proves our
-            // destination indices num_lt and len - 1 - num_ge stay
-            // in-bounds, and are never equal except the final iteration when
-            // num_lt = len - 1 - (len - 1 - num_lt) = len - 1 - num_ge.
-            // We write one different element to scratch each iteration thus
-            // scratch[0..len] will be initialized with a permutation of v.
-            //
-            // Should a panic occur, the copies in the scratch space are simply
-            // forgotten - even with interior mutability all data is still in v.
-            let pivot = v_base.add(pivot_pos);
-            let mut pivot_in_scratch = ptr::null_mut();
-            let mut num_lt = 0;
-            let mut scratch_rev = scratch_base.add(len);
-            for i in 0..len {
-                let scan = v_base.add(i);
-                scratch_rev = scratch_rev.sub(1);
-
-                let is_less_than_pivot = is_less(&*scan, &*pivot);
-                let dst_base = if is_less_than_pivot {
-                    scratch_base // i + num_lt
-                } else {
-                    scratch_rev // len - (i + 1) + num_lt = len - 1 - num_ge
-                };
-                let dst = dst_base.add(num_lt);
-
-                // Save pivot location in scratch for later.
-                if const { crate::has_direct_interior_mutability::<T>() }
-                    && intrinsics::unlikely(scan == pivot)
-                {
-                    pivot_in_scratch = dst;
-                }
-
-                ptr::copy_nonoverlapping(scan, dst, 1);
-                num_lt += is_less_than_pivot as usize;
-            }
-
-            // SAFETY: if T has interior mutability our copy in scratch can be
-            // outdated, update it.
-            if const { crate::has_direct_interior_mutability::<T>() } {
-                ptr::copy_nonoverlapping(pivot, pivot_in_scratch, 1);
-            }
-
-            num_lt
-        }
+        state.num_left
     }
 }
 
 struct PartitionState<T> {
+    // The start of the scratch auxiliary memory.
+    scratch_base: *mut T,
     // The current element that is being looked at, scans left to right through slice.
     scan: *const T,
-    // Counts the number of elements that compared less-than, also works around:
+    // Counts the number of elements that went to the left side, also works around:
     // https://github.com/rust-lang/rust/issues/117128
-    num_lt: usize,
+    num_left: usize,
     // Reverse scratch output pointer.
     scratch_rev: *mut T,
 }
 
-/// This construct works around a couple of issues with auto unrolling as well as manual unrolling.
-/// Auto unrolling as tested with rustc 1.75 is somewhat run-time and binary-size inefficient,
-/// because it performs additional math to calculate the loop end, which we can avoid by
-/// precomputing the loop end. Also auto unrolling only happens on x86 but not on Arm where doing so
-/// for the Firestorm micro-architecture yields a 15+% performance improvement. Manual unrolling via
-/// repeated code has a large negative impact on debug compile-times, and unrolling via `for _ in
-/// 0..UNROLL_LEN` has a 10-20% perf penalty when compiling with `opt-level=s` which is deemed
-/// unacceptable for such a crucial component of the sort implementation.
-trait UnrollHelper: Sized {
-    const UNROLL_LEN: usize;
-
-    unsafe fn unrolled_loop_body<F: FnMut(&mut PartitionState<Self>)>(
-        loop_body: F,
-        state: &mut PartitionState<Self>,
-    );
-}
-
-impl<T> UnrollHelper for T {
-    default const UNROLL_LEN: usize = 2;
-
-    #[inline(always)]
-    default unsafe fn unrolled_loop_body<F: FnMut(&mut PartitionState<T>)>(
-        mut loop_body: F,
-        state: &mut PartitionState<T>,
-    ) {
-        loop_body(state);
-        loop_body(state);
-    }
-}
-
-impl<T> UnrollHelper for T
-where
-    (): crate::IsTrue<{ mem::size_of::<T>() <= 8 }>,
-{
-    const UNROLL_LEN: usize = 4;
-
-    #[inline(always)]
-    unsafe fn unrolled_loop_body<F: FnMut(&mut PartitionState<T>)>(
-        mut loop_body: F,
-        state: &mut PartitionState<T>,
-    ) {
-        loop_body(state);
-        loop_body(state);
-        loop_body(state);
-        loop_body(state);
-    }
-}
-
-/// Specialization for small types, through traits to not invoke compile time
-/// penalties for loop unrolling when not used.
-impl<T> StablePartitionTypeImpl for T
-where
-    T: Copy + crate::Freeze,
-    (): crate::IsTrue<{ mem::size_of::<T>() <= 16 }>,
-{
-    /// See [`StablePartitionTypeImpl::partition_fill_scratch`].
-    fn partition_fill_scratch<F: FnMut(&T, &T) -> bool>(
-        v: &[T],
-        scratch: &mut [MaybeUninit<T>],
-        pivot_pos: usize,
-        is_less: &mut F,
-    ) -> usize {
-        let len = v.len();
-        let v_base = v.as_ptr();
-        let scratch_base = MaybeUninit::slice_as_mut_ptr(scratch);
-
-        if intrinsics::unlikely(scratch.len() < len || pivot_pos >= len) {
-            core::intrinsics::abort()
-        }
-
+impl<T> PartitionState<T> {
+    /// Depending on the value of `towards_left` will write a value to the growing left or right
+    /// side of the scratch memory. Track state accordingly. This forms the branchless core of the
+    /// partition.
+    ///
+    /// SAFETY: The caller must ensure that `PartitionState` is initialized correctly, where
+    /// `scratch_base` points to a contiguous area of length `len` memory that is valid for writing.
+    /// `scan` must point initially point to a contiguous area of `len` values that are valid to be
+    /// read. In addition this function MUST be called exactly `len` times, otherwise the values
+    /// written to the `scratch_base` region must considered incomplete and not read again.
+    unsafe fn partition_one(&mut self, towards_left: bool) -> *mut T {
+        // SAFETY: See function safety comment.
         unsafe {
-            // SAFETY: exactly the same invariants and logic as the non-specialized impl. And we do
-            // naive loop unrolling where the exact same loop body is just repeated.
-            let pivot = v_base.add(pivot_pos);
+            self.scratch_rev = self.scratch_rev.sub(1);
 
-            let mut loop_body = |state: &mut PartitionState<T>| {
-                state.scratch_rev = state.scratch_rev.sub(1);
-
-                let is_less_than_pivot = is_less(&*state.scan, &*pivot);
-                let dst_base = if is_less_than_pivot {
-                    scratch_base // i + num_lt
-                } else {
-                    state.scratch_rev // len - (i + 1) + num_lt = len - 1 - num_ge
-                };
-                ptr::copy_nonoverlapping(state.scan, dst_base.add(state.num_lt), 1);
-
-                state.num_lt += is_less_than_pivot as usize;
-                state.scan = state.scan.add(1);
+            let dst_base = if towards_left {
+                self.scratch_base // i + num_left
+            } else {
+                self.scratch_rev // len - (i + 1) + num_left = len - 1 - num_right
             };
+            let dst = dst_base.add(self.num_left);
+            ptr::copy_nonoverlapping(self.scan, dst, 1);
 
-            let mut state = PartitionState {
-                scan: v_base,
-                num_lt: 0,
-                scratch_rev: scratch_base.add(len),
-            };
-
-            // We do not simply call the loop body multiple times as this increases compile
-            // times significantly more, and the compiler unrolls a fixed loop just as well, if it
-            // is sensible.
-            let unroll_end = v_base.add(len - (T::UNROLL_LEN - 1));
-            while state.scan < unroll_end {
-                T::unrolled_loop_body(&mut loop_body, &mut state);
-            }
-
-            while state.scan < v_base.add(len) {
-                loop_body(&mut state);
-            }
-
-            state.num_lt
+            self.num_left += towards_left as usize;
+            self.scan = self.scan.add(1);
+            dst
         }
     }
 }
