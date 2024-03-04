@@ -71,21 +71,16 @@ fn sort_small_general<T: crate::Freeze, F: FnMut(&T, &T) -> bool>(
         intrinsics::abort();
     }
 
-    if len < 8 {
-        insertion_sort_shift_left(v, 1, is_less);
-        return;
-    }
-
     let v_base = v.as_mut_ptr();
     let len_div_2 = len / 2;
 
+    // SAFETY: See individual comments.
     unsafe {
         let scratch_base = scratch.as_mut_ptr() as *mut T;
 
-        let presorted_len = if len >= 16 {
+        let presorted_len = if const { mem::size_of::<T>() <= 16 } && len >= 16 {
             // SAFETY: scratch_base is valid and has enough space.
             sort8_stable(v_base, scratch_base, scratch_base.add(len), is_less);
-
             sort8_stable(
                 v_base.add(len_div_2),
                 scratch_base.add(len_div_2),
@@ -94,12 +89,17 @@ fn sort_small_general<T: crate::Freeze, F: FnMut(&T, &T) -> bool>(
             );
 
             8
-        } else {
+        } else if len >= 8 {
             // SAFETY: scratch_base is valid and has enough space.
             sort4_stable(v_base, scratch_base, is_less);
             sort4_stable(v_base.add(len_div_2), scratch_base.add(len_div_2), is_less);
 
             4
+        } else {
+            ptr::copy_nonoverlapping(v_base, scratch_base, 1);
+            ptr::copy_nonoverlapping(v_base.add(len_div_2), scratch_base.add(len_div_2), 1);
+
+            1
         };
 
         for offset in [0, len_div_2] {
@@ -278,7 +278,7 @@ pub unsafe fn sort4_stable<T, F: FnMut(&T, &T) -> bool>(
     }
 
     #[inline(always)]
-    pub fn select<T>(cond: bool, if_true: *const T, if_false: *const T) -> *const T {
+    fn select<T>(cond: bool, if_true: *const T, if_false: *const T) -> *const T {
         if cond {
             if_true
         } else {
@@ -289,7 +289,6 @@ pub unsafe fn sort4_stable<T, F: FnMut(&T, &T) -> bool>(
 
 /// SAFETY: The caller MUST guarantee that `v_base` is valid for 8 reads and writes, `scratch_base`
 /// and `dst` MUST be valid for 8 writes. The result will be stored in `dst[0..8]`.
-#[inline(never)]
 unsafe fn sort8_stable<T: crate::Freeze, F: FnMut(&T, &T) -> bool>(
     v_base: *mut T,
     dst: *mut T,

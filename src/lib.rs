@@ -196,6 +196,3 @@ const fn has_direct_interior_mutability<T>() -> bool {
     // could lead to double free.
     !T::IS_FREEZE
 }
-
-trait IsTrue<const B: bool> {}
-impl IsTrue<true> for () {}
