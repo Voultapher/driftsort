@@ -121,14 +121,13 @@ pub fn sort<T, F: FnMut(&T, &T) -> bool>(
     // SMALL_SORT_THRESHOLD as the lower limit. When eagerly sorting we also use
     // SMALL_SORT_THRESHOLD as our threshold, as we will call small_sort on any runs smaller than
     // this.
-    let min_good_run_len =
-        if eager_sort {
-            crate::MAX_LEN_ALWAYS_INSERTION_SORT / 2
-        } else if len <= (crate::MAX_LEN_ALWAYS_INSERTION_SORT * crate::MAX_LEN_ALWAYS_INSERTION_SORT) {
-            crate::MAX_LEN_ALWAYS_INSERTION_SORT
-        } else {
-            sqrt_approx(len)
-        };
+    let min_good_run_len = if eager_sort {
+        crate::MAX_LEN_ALWAYS_INSERTION_SORT / 2
+    } else if len <= (crate::MAX_LEN_ALWAYS_INSERTION_SORT * crate::MAX_LEN_ALWAYS_INSERTION_SORT) {
+        crate::MAX_LEN_ALWAYS_INSERTION_SORT
+    } else {
+        sqrt_approx(len)
+    };
 
     // (stack_len, runs, desired_depths) together form a stack maintaining run
     // information for the powersort heuristic. desired_depths[i] is the desired
@@ -148,12 +147,7 @@ pub fn sort<T, F: FnMut(&T, &T) -> bool>(
         // with root-level desired depth to fully collapse the merge tree.
         let (next_run, desired_depth);
         if scan_idx < len {
-            next_run = create_run(
-                &mut v[scan_idx..],
-                min_good_run_len,
-                eager_sort,
-                is_less,
-            );
+            next_run = create_run(&mut v[scan_idx..], min_good_run_len, eager_sort, is_less);
             desired_depth = merge_tree_depth(
                 scan_idx - prev_run.len(),
                 scan_idx,
@@ -229,7 +223,7 @@ fn create_run<T, F: FnMut(&T, &T) -> bool>(
     unsafe {
         intrinsics::assume(run_len <= len);
     }
-    
+
     if run_len >= min_good_run_len {
         if was_reversed {
             v[..run_len].reverse();
@@ -248,12 +242,10 @@ fn create_run<T, F: FnMut(&T, &T) -> bool>(
             } else {
                 crate::MAX_LEN_ALWAYS_INSERTION_SORT
             };
-            
+
             // SAFETY: new_run_len <= len in all cases.
-            let new_run_slice = unsafe {
-                v.get_unchecked_mut(..new_run_len)
-            };
-            
+            let new_run_slice = unsafe { v.get_unchecked_mut(..new_run_len) };
+
             crate::driftsort::<T, F, Vec<T>>(new_run_slice, is_less);
             DriftsortRun::new_sorted(new_run_len)
         } else {
