@@ -23,6 +23,8 @@ mod pivot;
 mod quicksort;
 mod smallsort;
 
+const MAX_LEN_ALWAYS_INSERTION_SORT: usize = 20;
+
 /// Compactly stores the length of a run, and whether or not it is sorted. This
 /// can always fit in a usize because the maximum slice length is isize::MAX.
 #[derive(Copy, Clone)]
@@ -85,7 +87,6 @@ fn driftsort<T, F: FnMut(&T, &T) -> bool, BufT: BufGuard<T>>(v: &mut [T], is_les
     // modern processors is very valuable, and for a single sort call in general
     // purpose code any gains from an advanced method are cancelled by icache
     // misses during the sort, and thrashing the icache for surrounding code.
-    const MAX_LEN_ALWAYS_INSERTION_SORT: usize = 20;
     if intrinsics::likely(len <= MAX_LEN_ALWAYS_INSERTION_SORT) {
         smallsort::insertion_sort_shift_left(v, 1, is_less);
         return;
@@ -120,8 +121,7 @@ fn driftsort_main<T, F: FnMut(&T, &T) -> bool, BufT: BufGuard<T>>(v: &mut [T], i
     // Using the hybrid quick + merge-sort has performance issues with the transition from insertion
     // sort to main loop. A more gradual and smoother transition can be had by using an always eager
     // merge approach as long as it can be served by a single merge.
-    use crate::smallsort::SmallSortTypeImpl;
-    let eager_sort = len <= T::SMALL_SORT_THRESHOLD * 2;
+    let eager_sort = len <= crate::MAX_LEN_ALWAYS_INSERTION_SORT * 2;
     drift::sort(v, scratch_slice, eager_sort, is_less);
 }
 

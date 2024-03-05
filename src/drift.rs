@@ -3,7 +3,6 @@ use core::intrinsics;
 use core::mem::MaybeUninit;
 
 use crate::merge::merge;
-use crate::smallsort::SmallSortTypeImpl;
 use crate::stable_quicksort;
 use crate::DriftsortRun;
 
@@ -123,8 +122,10 @@ pub fn sort<T, F: FnMut(&T, &T) -> bool>(
     // SMALL_SORT_THRESHOLD as our threshold, as we will call small_sort on any runs smaller than
     // this.
     let min_good_run_len =
-        if eager_sort || len <= (T::SMALL_SORT_THRESHOLD * T::SMALL_SORT_THRESHOLD) {
-            T::SMALL_SORT_THRESHOLD
+        if eager_sort {
+            crate::MAX_LEN_ALWAYS_INSERTION_SORT / 2
+        } else if len <= (crate::MAX_LEN_ALWAYS_INSERTION_SORT * crate::MAX_LEN_ALWAYS_INSERTION_SORT) {
+            crate::MAX_LEN_ALWAYS_INSERTION_SORT
         } else {
             sqrt_approx(len)
         };
@@ -149,7 +150,6 @@ pub fn sort<T, F: FnMut(&T, &T) -> bool>(
         if scan_idx < len {
             next_run = create_run(
                 &mut v[scan_idx..],
-                scratch,
                 min_good_run_len,
                 eager_sort,
                 is_less,
@@ -218,35 +218,47 @@ pub fn sort<T, F: FnMut(&T, &T) -> bool>(
 /// eagerly sorted when eager_sort is true, and left unsorted otherwise.
 fn create_run<T, F: FnMut(&T, &T) -> bool>(
     v: &mut [T],
-    scratch: &mut [MaybeUninit<T>],
     min_good_run_len: usize,
     eager_sort: bool,
     is_less: &mut F,
 ) -> DriftsortRun {
+    let len = v.len();
     let (run_len, was_reversed) = find_existing_run(v, is_less);
 
     // SAFETY: find_existing_run promises to return a valid run_len.
     unsafe {
-        intrinsics::assume(run_len <= v.len());
+        intrinsics::assume(run_len <= len);
     }
-
+    
     if run_len >= min_good_run_len {
         if was_reversed {
             v[..run_len].reverse();
         }
         DriftsortRun::new_sorted(run_len)
     } else {
-        let new_run_len = cmp::min(min_good_run_len, v.len());
-
         if eager_sort {
-            // When eager sorting min_good_run_len = T::SMALL_SORT_THRESHOLD,
-            // which will make stable_quicksort immediately call smallsort. By
-            // not calling the smallsort directly here it can always be inlined
-            // into the quicksort itself, making the recursive base case faster.
-            crate::quicksort::stable_quicksort(&mut v[..new_run_len], scratch, 0, None, is_less);
+            // While eager sorting we want to create eager blocks, and we want
+            // to limit ourselves to MAX_LEN_ALWAYS_INSERTION_SORT so we can
+            // re-use the insertion sort that is inlined in our main entrypoint.
+            // But we want to prevent leaving a small imbalanced leftover merge.
+            let new_run_len = if len <= crate::MAX_LEN_ALWAYS_INSERTION_SORT {
+                len
+            } else if len <= 2 * crate::MAX_LEN_ALWAYS_INSERTION_SORT {
+                len / 2
+            } else {
+                crate::MAX_LEN_ALWAYS_INSERTION_SORT
+            };
+            
+            // SAFETY: new_run_len <= len in all cases.
+            let new_run_slice = unsafe {
+                v.get_unchecked_mut(..new_run_len)
+            };
+            
+            crate::driftsort::<T, F, Vec<T>>(new_run_slice, is_less);
             DriftsortRun::new_sorted(new_run_len)
         } else {
-            DriftsortRun::new_unsorted(new_run_len)
+            let skip = cmp::min(min_good_run_len, len);
+            DriftsortRun::new_unsorted(skip)
         }
     }
 }
