@@ -37,7 +37,7 @@ impl<T> SmallSortTypeImpl for T {
     }
 }
 
-pub const MIN_SMALL_SORT_SCRATCH_LEN: usize = i32::SMALL_SORT_THRESHOLD + 16;
+// const MIN_SMALL_SORT_SCRATCH_LEN: usize = i32::SMALL_SORT_THRESHOLD + 16;
 
 impl<T: crate::Freeze> SmallSortTypeImpl for T {
     // From a comparison perspective 20, would be ~2% more efficient for fully random input, but a
@@ -197,6 +197,9 @@ unsafe fn insert_tail<T, F: FnMut(&T, &T) -> bool>(begin: *mut T, tail: *mut T, 
         }
     }
 }
+
+// Going beyond this is algorithmically inefficient.
+pub(crate) const MAX_LEN_ALWAYS_INSERTION_SORT: usize = 20;
 
 /// Sort `v` assuming `v[..offset]` is already sorted.
 pub fn insertion_sort_shift_left<T, F: FnMut(&T, &T) -> bool>(

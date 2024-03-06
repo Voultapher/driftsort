@@ -3,9 +3,10 @@ use core::intrinsics;
 use core::mem::MaybeUninit;
 
 use crate::merge::merge;
-use crate::smallsort::SmallSortTypeImpl;
+use crate::smallsort::{
+    insertion_sort_shift_left, SmallSortTypeImpl, MAX_LEN_ALWAYS_INSERTION_SORT,
+};
 use crate::stable_quicksort;
-use crate::DriftsortRun;
 
 // Lazy logical runs as in Glidesort.
 #[inline(always)]
@@ -119,15 +120,13 @@ pub fn sort<T, F: FnMut(&T, &T) -> bool>(
     // It's important to have a relatively high entry barrier for pre-sorted runs, as the presence
     // of a single such run will force on average several merge operations and shrink the maximum
     // quicksort size a lot. For that reason we use sqrt(len) as our pre-sorted run threshold, with
-    // SMALL_SORT_THRESHOLD as the lower limit. When eagerly sorting we also use
-    // SMALL_SORT_THRESHOLD as our threshold, as we will call small_sort on any runs smaller than
-    // this.
-    let min_good_run_len =
-        if eager_sort || len <= (T::SMALL_SORT_THRESHOLD * T::SMALL_SORT_THRESHOLD) {
-            T::SMALL_SORT_THRESHOLD
-        } else {
-            sqrt_approx(len)
-        };
+    // SMALL_SORT_THRESHOLD as the lower limit. When eagerly sorting we ignore this threshold as we
+    // will call insertion sort directly to create runs.
+    let min_good_run_len = if len <= (T::SMALL_SORT_THRESHOLD * T::SMALL_SORT_THRESHOLD) {
+        T::SMALL_SORT_THRESHOLD
+    } else {
+        sqrt_approx(len)
+    };
 
     // (stack_len, runs, desired_depths) together form a stack maintaining run
     // information for the powersort heuristic. desired_depths[i] is the desired
@@ -147,13 +146,7 @@ pub fn sort<T, F: FnMut(&T, &T) -> bool>(
         // with root-level desired depth to fully collapse the merge tree.
         let (next_run, desired_depth);
         if scan_idx < len {
-            next_run = create_run(
-                &mut v[scan_idx..],
-                scratch,
-                min_good_run_len,
-                eager_sort,
-                is_less,
-            );
+            next_run = create_run(&mut v[scan_idx..], min_good_run_len, eager_sort, is_less);
             desired_depth = merge_tree_depth(
                 scan_idx - prev_run.len(),
                 scan_idx,
@@ -212,13 +205,12 @@ pub fn sort<T, F: FnMut(&T, &T) -> bool>(
 
 /// Creates a new logical run.
 ///
-/// A logical run can either be sorted or unsorted. If there is a pre-existing
-/// run of length min_good_run_len (or longer) starting at v[0] we find and
-/// return it, otherwise we return a run of length min_good_run_len that is
-/// eagerly sorted when eager_sort is true, and left unsorted otherwise.
+/// A logical run can either be sorted or unsorted. If there is a pre-existing run of length
+/// min_good_run_len or longer starting at v[0] we find and return it, otherwise we return a run of
+/// length MAX_LEN_ALWAYS_INSERTION_SORT or longer that is eagerly sorted when eager_sort is true,
+/// and left unsorted otherwise.
 fn create_run<T, F: FnMut(&T, &T) -> bool>(
     v: &mut [T],
-    scratch: &mut [MaybeUninit<T>],
     min_good_run_len: usize,
     eager_sort: bool,
     is_less: &mut F,
@@ -230,23 +222,28 @@ fn create_run<T, F: FnMut(&T, &T) -> bool>(
         intrinsics::assume(run_len <= v.len());
     }
 
-    if run_len >= min_good_run_len {
+    let full_sorted = run_len >= min_good_run_len;
+
+    if full_sorted || eager_sort {
         if was_reversed {
             v[..run_len].reverse();
         }
+    }
+
+    if full_sorted {
         DriftsortRun::new_sorted(run_len)
     } else {
-        let new_run_len = cmp::min(min_good_run_len, v.len());
-
         if eager_sort {
-            // When eager sorting min_good_run_len = T::SMALL_SORT_THRESHOLD,
-            // which will make stable_quicksort immediately call smallsort. By
-            // not calling the smallsort directly here it can always be inlined
-            // into the quicksort itself, making the recursive base case faster.
-            crate::quicksort::stable_quicksort(&mut v[..new_run_len], scratch, 0, None, is_less);
-            DriftsortRun::new_sorted(new_run_len)
+            let mut eager_run_len = run_len;
+            if run_len < MAX_LEN_ALWAYS_INSERTION_SORT {
+                let new_run_len = cmp::min(MAX_LEN_ALWAYS_INSERTION_SORT, v.len());
+                insertion_sort_shift_left(&mut v[..new_run_len], run_len, is_less);
+                eager_run_len = new_run_len;
+            }
+
+            DriftsortRun::new_sorted(eager_run_len)
         } else {
-            DriftsortRun::new_unsorted(new_run_len)
+            DriftsortRun::new_unsorted(cmp::min(min_good_run_len, v.len()))
         }
     }
 }
@@ -278,5 +275,32 @@ fn find_existing_run<T, F: FnMut(&T, &T) -> bool>(v: &[T], is_less: &mut F) -> (
             }
         }
         (run_len, strictly_descending)
+    }
+}
+
+/// Compactly stores the length of a run, and whether or not it is sorted. This
+/// can always fit in a usize because the maximum slice length is isize::MAX.
+#[derive(Copy, Clone)]
+struct DriftsortRun(usize);
+
+impl DriftsortRun {
+    #[inline(always)]
+    fn new_sorted(length: usize) -> Self {
+        Self((length << 1) | 1)
+    }
+
+    #[inline(always)]
+    fn new_unsorted(length: usize) -> Self {
+        Self((length << 1) | 0)
+    }
+
+    #[inline(always)]
+    fn sorted(self) -> bool {
+        self.0 & 1 == 1
+    }
+
+    #[inline(always)]
+    fn len(self) -> usize {
+        self.0 >> 1
     }
 }

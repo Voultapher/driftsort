@@ -23,32 +23,7 @@ mod pivot;
 mod quicksort;
 mod smallsort;
 
-/// Compactly stores the length of a run, and whether or not it is sorted. This
-/// can always fit in a usize because the maximum slice length is isize::MAX.
-#[derive(Copy, Clone)]
-struct DriftsortRun(usize);
-
-impl DriftsortRun {
-    #[inline(always)]
-    pub fn new_sorted(length: usize) -> Self {
-        Self((length << 1) | 1)
-    }
-
-    #[inline(always)]
-    pub fn new_unsorted(length: usize) -> Self {
-        Self((length << 1) | 0)
-    }
-
-    #[inline(always)]
-    pub fn sorted(self) -> bool {
-        self.0 & 1 == 1
-    }
-
-    #[inline(always)]
-    pub fn len(self) -> usize {
-        self.0 >> 1
-    }
-}
+use crate::smallsort::MAX_LEN_ALWAYS_INSERTION_SORT;
 
 #[inline(always)]
 pub fn sort<T: Ord>(v: &mut [T]) {
@@ -85,7 +60,7 @@ fn driftsort<T, F: FnMut(&T, &T) -> bool, BufT: BufGuard<T>>(v: &mut [T], is_les
     // modern processors is very valuable, and for a single sort call in general
     // purpose code any gains from an advanced method are cancelled by icache
     // misses during the sort, and thrashing the icache for surrounding code.
-    const MAX_LEN_ALWAYS_INSERTION_SORT: usize = 20;
+
     if intrinsics::likely(len <= MAX_LEN_ALWAYS_INSERTION_SORT) {
         smallsort::insertion_sort_shift_left(v, 1, is_less);
         return;
@@ -105,23 +80,35 @@ fn driftsort_main<T, F: FnMut(&T, &T) -> bool, BufT: BufGuard<T>>(v: &mut [T], i
     // sized inputs while scaling down to len / 2 for larger inputs. We need at
     // least len / 2 for our stable merging routine.
     const MAX_FULL_ALLOC_BYTES: usize = 8_000_000;
-    let len = v.len();
-    let full_alloc_size = cmp::min(len, MAX_FULL_ALLOC_BYTES / mem::size_of::<T>());
 
-    let alloc_size = cmp::max(
-        cmp::max(len / 2, full_alloc_size),
-        crate::smallsort::MIN_SMALL_SORT_SCRATCH_LEN,
-    );
+    let len = v.len();
+
+    // Using the hybrid quick + merge-sort has performance issues with the transition from insertion
+    // sort to main loop. A more gradual and smoother transition can be had by using an always eager
+    // merge approach as long as it can be served by at most 3 merges. Another factor that affects
+    // transition performance, is the allocation size. The small-sort has a lower limit of
+    // `MIN_SMALL_SORT_SCRATCH_LEN` e.g. 48 which is much larger than for example 21. Where we only
+    // need a scratch buffer of length 10. Especially fully ascending and descending inputs in range
+    // `20..100` that are a bit larger than a `u64`, e.g. `String` spend most of their time doing
+    // the allocation. An alternativ would be to do lazy scratch allocation, but that comes with
+    // it's own set of complex tradeoffs and makes the code substantially more complex.
+    let eager_sort = len <= MAX_LEN_ALWAYS_INSERTION_SORT * 4;
+    let len_div_2 = len / 2;
+
+    let alloc_size = if eager_sort {
+        len_div_2
+    } else {
+        // There are local checks that ensure that it would abort if the thresholds are tweaked in a
+        // way that make this value ever smaller than `MIN_SMALL_SORT_SCRATCH_LEN`
+        let full_alloc_size = cmp::min(len, MAX_FULL_ALLOC_BYTES / mem::size_of::<T>());
+
+        cmp::max(len_div_2, full_alloc_size)
+    };
 
     let mut buf = BufT::with_capacity(alloc_size);
     let scratch_slice =
         unsafe { slice::from_raw_parts_mut(buf.mut_ptr() as *mut MaybeUninit<T>, buf.capacity()) };
 
-    // Using the hybrid quick + merge-sort has performance issues with the transition from insertion
-    // sort to main loop. A more gradual and smoother transition can be had by using an always eager
-    // merge approach as long as it can be served by a single merge.
-    use crate::smallsort::SmallSortTypeImpl;
-    let eager_sort = len <= T::SMALL_SORT_THRESHOLD * 2;
     drift::sort(v, scratch_slice, eager_sort, is_less);
 }
 
