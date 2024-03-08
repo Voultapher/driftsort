@@ -9,12 +9,14 @@
     inline_const,
     core_intrinsics,
     sized_type_properties,
-    generic_const_exprs
+    generic_const_exprs,
+    maybe_uninit_uninit_array
 )]
 
 use core::cmp::{self, Ordering};
 use core::intrinsics;
 use core::mem::{self, MaybeUninit, SizedTypeProperties};
+use core::ptr;
 use core::slice;
 
 mod drift;
@@ -99,11 +101,19 @@ fn driftsort_main<T, F: FnMut(&T, &T) -> bool, BufT: BufGuard<T>>(v: &mut [T], i
     // The combined impact of large amounts of new code that needs to enter the i-cache, dozens of
     // branches for control logic and a call to the allocator with a min of len + 16 for small
     // inputs, yields a sharp regression in throughput on many machines. Especially in cold
-    // benchmarks.
-    let mut buf = BufT::with_capacity(alloc_len);
-    // SAFETY: We rely on the `BufT` implementation to return valid memory of `alloc_len`.
-    let scratch =
-        unsafe { slice::from_raw_parts_mut(buf.mut_ptr() as *mut MaybeUninit<T>, buf.capacity()) };
+    // benchmarks. Using stack allocation avoids substantial overhead and potential contention on
+    // the global allocator.
+    let mut stack_array = AlignedStorage::<T, 4096>::new();
+    let stack_array_scratch = stack_array.as_mut();
+    let mut buf;
+
+    let scratch = if stack_array_scratch.len() >= alloc_len {
+        stack_array_scratch
+    } else {
+        buf = BufT::with_capacity(alloc_len);
+        // SAFETY: We rely on the `BufT` implementation to return valid memory of `alloc_len`.
+        unsafe { slice::from_raw_parts_mut(buf.mut_ptr() as *mut MaybeUninit<T>, buf.capacity()) }
+    };
 
     // Using the hybrid quick + merge-sort has performance issues with the transition from insertion
     // sort to main loop. A more gradual and smoother transition can be had by using an always eager
@@ -127,6 +137,28 @@ impl<T> BufGuard<T> for Vec<T> {
     }
     fn capacity(&self) -> usize {
         self.capacity()
+    }
+}
+
+#[repr(C)]
+struct AlignedStorage<T, const N: usize> {
+    _align: [T; 0],
+    storage: [MaybeUninit<u8>; N],
+}
+
+impl<T, const N: usize> AlignedStorage<T, N> {
+    fn new() -> Self {
+        Self {
+            _align: [],
+            storage: MaybeUninit::uninit_array(),
+        }
+    }
+
+    fn as_mut(&mut self) -> &mut [MaybeUninit<T>] {
+        let len = N / mem::size_of::<T>();
+
+        // SAFETY: `_align` ensures we are correctly aligned.
+        unsafe { &mut *ptr::slice_from_raw_parts_mut(self.storage.as_mut_ptr().cast(), len) }
     }
 }
 
