@@ -222,36 +222,39 @@ fn create_run<T, F: FnMut(&T, &T) -> bool>(
 ) -> DriftsortRun {
     use crate::smallsort::SmallSortTypeImpl;
 
-    let (run_len, was_reversed) = find_existing_run(v, is_less);
-
     let len = v.len();
 
-    // SAFETY: find_existing_run promises to return a valid run_len.
-    unsafe {
-        intrinsics::assume(run_len <= len);
+    if len >= min_good_run_len {
+        let (run_len, was_reversed) = find_existing_run(v, is_less);
+
+        // SAFETY: find_existing_run promises to return a valid run_len.
+        unsafe {
+            intrinsics::assume(run_len <= len);
+        }
+
+        if run_len >= min_good_run_len {
+            if was_reversed {
+                v[..run_len].reverse();
+            }
+
+            return DriftsortRun::new_sorted(run_len);
+        }
     }
 
-    if run_len >= min_good_run_len {
-        if was_reversed {
-            v[..run_len].reverse();
-        }
-        DriftsortRun::new_sorted(run_len)
-    } else {
-        if eager_sort {
-            // This branch is the algorithmic worst-case fallback. It MUST sustain the O(N * log(N))
-            // worst-case guarantee. Where N is the total length of the slice that is sorted, not
-            // necessarily the sub-slice passed to `create_run`.
+    if eager_sort {
+        // This branch is the algorithmic worst-case fallback. It MUST sustain the O(N * log(N))
+        // worst-case guarantee. Where N is the total length of the slice that is sorted, not
+        // necessarily the sub-slice passed to `create_run`.
 
-            // We call stable_quicksort with a len that will immediately call small-sort. By not
-            // calling the small-sort directly here it can always be inlined into the quicksort
-            // itself, making the recursive base case faster and is generally more binary-size
-            // efficient.
-            let eager_run_len = cmp::min(T::SMALL_SORT_THRESHOLD, len);
-            crate::quicksort::stable_quicksort(&mut v[..eager_run_len], scratch, 0, None, is_less);
-            DriftsortRun::new_sorted(eager_run_len)
-        } else {
-            DriftsortRun::new_unsorted(cmp::min(min_good_run_len, len))
-        }
+        // We call stable_quicksort with a len that will immediately call small-sort. By not
+        // calling the small-sort directly here it can always be inlined into the quicksort
+        // itself, making the recursive base case faster and is generally more binary-size
+        // efficient.
+        let eager_run_len = cmp::min(T::SMALL_SORT_THRESHOLD, len);
+        crate::quicksort::stable_quicksort(&mut v[..eager_run_len], scratch, 0, None, is_less);
+        DriftsortRun::new_sorted(eager_run_len)
+    } else {
+        DriftsortRun::new_unsorted(cmp::min(min_good_run_len, len))
     }
 }
 
