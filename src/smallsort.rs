@@ -2,7 +2,7 @@ use core::intrinsics;
 use core::mem::{self, ManuallyDrop, MaybeUninit};
 use core::ptr;
 
-// It's important to differentiate between small-sort performance for small slices and
+// It's important to differentiate between SMALL_SORT_THRESHOLD performance for small slices and
 // small-sort performance sorting small sub-slices as part of the main quicksort loop. For the
 // former, testing showed that the representative benchmarks for real-world performance are cold
 // CPU state and not single-size hot benchmarks. For the latter the CPU will call them many
@@ -378,7 +378,7 @@ unsafe fn merge_down<T, F: FnMut(&T, &T) -> bool>(
 ///
 /// Original idea for bi-directional merging by Igor van den Hoven (quadsort), adapted to only use
 /// merge up and down. In contrast to the original parity_merge function, it performs 2 writes
-/// instead of 4 per iteration. Ord violation detection was added.
+/// instead of 4 per iteration. Ord violation detection and uneven length handling were added.
 ///
 // SAFETY: the caller must guarantee that `dst` is valid for v.len() writes.
 // Also `v.as_ptr` and `dst` must not alias. v.len() must be >= 2.

@@ -23,33 +23,6 @@ mod pivot;
 mod quicksort;
 mod smallsort;
 
-/// Compactly stores the length of a run, and whether or not it is sorted. This
-/// can always fit in a usize because the maximum slice length is isize::MAX.
-#[derive(Copy, Clone)]
-struct DriftsortRun(usize);
-
-impl DriftsortRun {
-    #[inline(always)]
-    pub fn new_sorted(length: usize) -> Self {
-        Self((length << 1) | 1)
-    }
-
-    #[inline(always)]
-    pub fn new_unsorted(length: usize) -> Self {
-        Self((length << 1) | 0)
-    }
-
-    #[inline(always)]
-    pub fn sorted(self) -> bool {
-        self.0 & 1 == 1
-    }
-
-    #[inline(always)]
-    pub fn len(self) -> usize {
-        self.0 >> 1
-    }
-}
-
 #[inline(always)]
 pub fn sort<T: Ord>(v: &mut [T]) {
     stable_sort(v, |a, b| a.lt(b))
@@ -98,42 +71,45 @@ fn driftsort<T, F: FnMut(&T, &T) -> bool, BufT: BufGuard<T>>(v: &mut [T], is_les
 // is minimal.
 #[inline(never)]
 fn driftsort_main<T, F: FnMut(&T, &T) -> bool, BufT: BufGuard<T>>(v: &mut [T], is_less: &mut F) {
-    // Pick whichever is greater:
-    //  - alloc len elements up to MAX_FULL_ALLOC_BYTES
-    //  - alloc len / 2 elements
-    // This allows us to use the most performant algorithms for small-medium
-    // sized inputs while scaling down to len / 2 for larger inputs. We need at
-    // least len / 2 for our stable merging routine.
-    const MAX_FULL_ALLOC_BYTES: usize = 8_000_000;
-    let len = v.len();
-    let full_alloc_size = cmp::min(len, MAX_FULL_ALLOC_BYTES / mem::size_of::<T>());
+    use crate::smallsort::SmallSortTypeImpl;
 
-    let alloc_size = cmp::max(
-        cmp::max(len / 2, full_alloc_size),
+    // Allocating len instead of len / 2 allows the quicksort to work on the full size, which can
+    // give speedups especially for low cardinality inputs where common values are filtered out only
+    // once, instead of twice. And it allows bi-directional merging the full input. However to
+    // reduce peak memory usage for large inputs, fall back to allocating len / 2 if a certain
+    // threshold is passed.
+    const MAX_FULL_ALLOC_BYTES: usize = 8_000_000; // 8MB
+
+    // Pick whichever is greater:
+    //
+    //  - alloc n up to MAX_FULL_ALLOC_BYTES
+    //  - alloc n / 2
+    //
+    // This serves to make the impact and performance cliff when going above the threshold less
+    // severe than immediately switching to len / 2.
+    let len = v.len();
+    let full_alloc_len = cmp::min(len, MAX_FULL_ALLOC_BYTES / mem::size_of::<T>());
+    let alloc_len = cmp::max(
+        cmp::max(len / 2, full_alloc_len),
         crate::smallsort::MIN_SMALL_SORT_SCRATCH_LEN,
     );
 
-    let mut buf = BufT::with_capacity(alloc_size);
-    let scratch_slice =
+    // Tiny inputs N <= MAX_LEN_ALWAYS_INSERTION_SORT will be sorted by insertion sort without
+    // allocating. Which is followed by a transition to the core hybrid merge- quicksort algorithm.
+    // The combined impact of large amounts of new code that needs to enter the i-cache, dozens of
+    // branches for control logic and a call to the allocator with a min of len + 16 for small
+    // inputs, yields a sharp regression in throughput on many machines. Especially in cold
+    // benchmarks.
+    let mut buf = BufT::with_capacity(alloc_len);
+    // SAFETY: We rely on the `BufT` implementation to return valid memory of `alloc_len`.
+    let scratch =
         unsafe { slice::from_raw_parts_mut(buf.mut_ptr() as *mut MaybeUninit<T>, buf.capacity()) };
 
     // Using the hybrid quick + merge-sort has performance issues with the transition from insertion
     // sort to main loop. A more gradual and smoother transition can be had by using an always eager
     // merge approach as long as it can be served by a single merge.
-    use crate::smallsort::SmallSortTypeImpl;
     let eager_sort = len <= T::SMALL_SORT_THRESHOLD * 2;
-    drift::sort(v, scratch_slice, eager_sort, is_less);
-}
-
-fn stable_quicksort<T, F: FnMut(&T, &T) -> bool>(
-    v: &mut [T],
-    scratch: &mut [MaybeUninit<T>],
-    is_less: &mut F,
-) {
-    // Limit the number of imbalanced partitions to `2 * floor(log2(len))`.
-    // The binary OR by one is used to eliminate the zero-check in the logarithm.
-    let limit = 2 * (v.len() | 1).ilog2();
-    crate::quicksort::stable_quicksort(v, scratch, limit, None, is_less);
+    drift::sort(v, scratch, eager_sort, is_less);
 }
 
 trait BufGuard<T> {
