@@ -4,6 +4,39 @@ use core::mem::MaybeUninit;
 
 use crate::merge::merge;
 
+// Nearly-Optimal Mergesorts: Fast, Practical Sorting Methods That Optimally
+// Adapt to Existing Runs by J. Ian Munro and Sebastian Wild.
+//
+// This method forms a binary merge tree, where each internal node corresponds
+// to a splitting point between the adjacent runs that have to be merged. If we
+// visualize our array as the number line from 0 to 1, we want to find the
+// dyadic fraction with smallest denominator that lies between the midpoints of
+// our to-be-merged slices. The exponent in the dyadic fraction indicates the
+// desired depth in the binary merge tree this internal node wishes to have.
+// This does not always correspond to the actual depth due to the inherent
+// imbalance in runs, but we follow it as closely as possible.
+//
+// As an optimization we rescale the number line from [0, 1) to [0, 2^62). Then
+// finding the simplest dyadic fraction between midpoints corresponds to finding
+// the most significant bit difference of the midpoints. We save scale_factor =
+// ceil(2^62 / n) to perform this rescaling using a multiplication, avoiding
+// having to repeatedly do integer divides. This rescaling isn't exact when n is
+// not a power of two since we use integers and not reals, but the result is
+// very close, and in fact when n < 2^30 the resulting tree is equivalent as the
+// approximation errors stay entirely in the lower order bits.
+//
+// Thus for the splitting point between two adjacent slices [a, b) and [b, c)
+// the desired depth of the corresponding merge node is CLZ((a+b)*f ^ (b+c)*f),
+// where CLZ counts the number of leading zeros in an integer and f is our scale
+// factor. Note that we omitted the division by two in the midpoint
+// calculations, as this simply shifts the bits by one position (and thus always
+// adds one to the result), and we only care about the relative depths.
+//
+// Finally, if we try to upper bound x = (a+b)*f giving x = (n-1 + n) * ceil(2^62 / n) then
+//    x < (2^62 / n + 1) * 2n
+//    x < 2^63 + 2n
+// So as long as n < 2^62 we find that x < 2^64, meaning our operations do not
+// overflow.
 pub fn sort<T, F: FnMut(&T, &T) -> bool>(
     v: &mut [T],
     scratch: &mut [MaybeUninit<T>],
@@ -140,39 +173,6 @@ fn logical_merge<T, F: FnMut(&T, &T) -> bool>(
     }
 }
 
-// Nearly-Optimal Mergesorts: Fast, Practical Sorting Methods That Optimally
-// Adapt to Existing Runs by J. Ian Munro and Sebastian Wild.
-//
-// This method forms a binary merge tree, where each internal node corresponds
-// to a splitting point between the adjacent runs that have to be merged. If we
-// visualize our array as the number line from 0 to 1, we want to find the
-// dyadic fraction with smallest denominator that lies between the midpoints of
-// our to-be-merged slices. The exponent in the dyadic fraction indicates the
-// desired depth in the binary merge tree this internal node wishes to have.
-// This does not always correspond to the actual depth due to the inherent
-// imbalance in runs, but we follow it as closely as possible.
-//
-// As an optimization we rescale the number line from [0, 1) to [0, 2^62). Then
-// finding the simplest dyadic fraction between midpoints corresponds to finding
-// the most significant bit difference of the midpoints. We save scale_factor =
-// ceil(2^62 / n) to perform this rescaling using a multiplication, avoiding
-// having to repeatedly do integer divides. This rescaling isn't exact when n is
-// not a power of two since we use integers and not reals, but the result is
-// very close, and in fact when n < 2^30 the resulting tree is equivalent as the
-// approximation errors stay entirely in the lower order bits.
-//
-// Thus for the splitting point between two adjacent slices [a, b) and [b, c)
-// the desired depth of the corresponding merge node is CLZ((a+b)*f ^ (b+c)*f),
-// where CLZ counts the number of leading zeros in an integer and f is our scale
-// factor. Note that we omitted the division by two in the midpoint
-// calculations, as this simply shifts the bits by one position (and thus always
-// adds one to the result), and we only care about the relative depths.
-//
-// Finally, if we try to upper bound x = (a+b)*f giving x = (n-1 + n) * ceil(2^62 / n) then
-//    x < (2^62 / n + 1) * 2n
-//    x < 2^63 + 2n
-// So as long as n < 2^62 we find that x < 2^64, meaning our operations do not
-// overflow.
 #[inline(always)]
 fn merge_tree_scale_factor(n: usize) -> u64 {
     if usize::BITS > u64::BITS {
