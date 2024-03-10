@@ -150,6 +150,14 @@ pub fn sort<T, F: FnMut(&T, &T) -> bool>(
 //    x < 2^63 + 2n
 // So as long as n < 2^62 we find that x < 2^64, meaning our operations do not
 // overflow.
+#[inline(always)]
+fn merge_tree_scale_factor(n: usize) -> u64 {
+    if usize::BITS > u64::BITS {
+        panic!("Platform not supported");
+    }
+
+    ((1 << 62) + n as u64 - 1) / n as u64
+}
 
 // Note: merge_tree_depth output is < 64 when left < right as f*x and f*y must
 // differ in some bit, and is <= 64 always.
@@ -204,15 +212,6 @@ fn logical_merge<T, F: FnMut(&T, &T) -> bool>(
     } else {
         DriftsortRun::new_unsorted(len)
     }
-}
-
-#[inline(always)]
-fn merge_tree_scale_factor(n: usize) -> u64 {
-    if usize::BITS > u64::BITS {
-        panic!("Platform not supported");
-    }
-
-    ((1 << 62) + n as u64 - 1) / n as u64
 }
 
 /// Creates a new logical run.
