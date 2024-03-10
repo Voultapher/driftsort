@@ -2,15 +2,17 @@ use core::intrinsics;
 use core::mem::{self, ManuallyDrop, MaybeUninit};
 use core::ptr;
 
-// It's important to differentiate between SMALL_SORT_THRESHOLD performance for small slices and
-// small-sort performance sorting small sub-slices as part of the main quicksort loop. For the
-// former, testing showed that the representative benchmarks for real-world performance are cold
-// CPU state and not single-size hot benchmarks. For the latter the CPU will call them many
-// times, so hot benchmarks are fine and more realistic. And it's worth it to optimize sorting
-// small sub-slices with more sophisticated solutions than insertion sort.
+// It's important to differentiate between SMALL_SORT_THRESHOLD performance for
+// small slices and small-sort performance sorting small sub-slices as part of
+// the main quicksort loop. For the former, testing showed that the
+// representative benchmarks for real-world performance are cold CPU state and
+// not single-size hot benchmarks. For the latter the CPU will call them many
+// times, so hot benchmarks are fine and more realistic. And it's worth it to
+// optimize sorting small sub-slices with more sophisticated solutions than
+// insertion sort.
 
-// Use a trait to focus code-gen on only the parts actually relevant for the type. Avoid generating
-// LLVM-IR for the sorting-network and median-networks for types that don't qualify.
+// Use a trait to avoid generating code for types that don't qualify for the
+// faster small-sort implementation.
 pub trait SmallSortTypeImpl: Sized {
     const SMALL_SORT_THRESHOLD: usize;
 
@@ -40,11 +42,9 @@ impl<T> SmallSortTypeImpl for T {
 pub const MIN_SMALL_SORT_SCRATCH_LEN: usize = i32::SMALL_SORT_THRESHOLD + 16;
 
 impl<T: crate::Freeze> SmallSortTypeImpl for T {
-    // From a comparison perspective 20, would be ~2% more efficient for fully random input, but a
-    // smaller threshold implies more partitions with smaller inputs, and choosing 32 yields better
-    // performance overall. Because stable_partition has to account for the pivot, it has nontrivial
-    // control-flow. In addition a larger SMALL_SORT_THRESHOLD yields better results for the
-    // transition from insertion sort main driftsort logic.
+    // From a comparison perspective 20 was ~2% more efficient for fully
+    // random input, but for wall-clock performance choosing 32 yielded
+    // better performance overall.
     const SMALL_SORT_THRESHOLD: usize = 32;
 
     #[inline(always)]
@@ -119,16 +119,18 @@ fn sort_small_general<T: crate::Freeze, F: FnMut(&T, &T) -> bool>(
             }
         }
 
-        // See comment in `CopyOnDrop::drop`.
+        // SAFETY: see comment in `CopyOnDrop::drop`.
         let drop_guard = CopyOnDrop {
             src: scratch_base,
             dst: v_base,
             len,
         };
 
-        // It's faster to merge directly into `v` and copy over the 'safe' elements of
-        // `scratch` into v only if there was a panic. This technique is similar to
-        // ping-pong merging.
+        // SAFETY: at this point scratch_base is fully initialized, allowing us
+        // to use it as the source of our merge back into the original array.
+        // If a panic occurs we ensure the original array is restored to a valid
+        // permutation of the input through drop_guard. This technique is similar
+        // to ping-pong merging.
         bidirectional_merge(
             &*ptr::slice_from_raw_parts(drop_guard.src, drop_guard.len),
             drop_guard.dst,
@@ -159,6 +161,7 @@ impl<T> Drop for CopyOnDrop<T> {
 /// # Safety
 /// begin < tail and p must be valid and initialized for all begin <= p <= tail.
 unsafe fn insert_tail<T, F: FnMut(&T, &T) -> bool>(begin: *mut T, tail: *mut T, is_less: &mut F) {
+    // SAFETY: see individual comments.
     unsafe {
         // SAFETY: in-bounds as tail > begin.
         let mut sift = tail.sub(1);
@@ -209,6 +212,7 @@ pub fn insertion_sort_shift_left<T, F: FnMut(&T, &T) -> bool>(
         intrinsics::abort();
     }
 
+    // SAFETY: see individual comments.
     unsafe {
         // We write this basic loop directly using pointers, as when we use a
         // for loop LLVM likes to unroll this loop which we do not want.
@@ -228,20 +232,20 @@ pub fn insertion_sort_shift_left<T, F: FnMut(&T, &T) -> bool>(
     }
 }
 
-/// SAFETY: The caller MUST guarantee that `v_base` is valid for 4 reads and `dest_ptr` is valid
-/// for 4 writes. The result will be stored in `dst[0..4]`.
+/// SAFETY: The caller MUST guarantee that `v_base` is valid for 4 reads and
+/// `dst` is valid for 4 writes. The result will be stored in `dst[0..4]`.
 pub unsafe fn sort4_stable<T, F: FnMut(&T, &T) -> bool>(
     v_base: *const T,
     dst: *mut T,
     is_less: &mut F,
 ) {
-    // By limiting select to picking pointers, we are guaranteed good cmov code-gen regardless of
-    // type T layout. Further this only does 5 instead of 6 comparisons compared to a stable
-    // transposition 4 element sorting-network. Also by only operating on pointers, we get optimal
-    // element copy usage. Doing exactly 1 copy per element.
+    // By limiting select to picking pointers, we are guaranteed good cmov code-gen
+    // regardless of type T's size. Further this only does 5 instead of 6
+    // comparisons compared to a stable transposition 4 element sorting-network,
+    // and always copies each element exactly once.
 
-    // let v_base = v.as_ptr();
-
+    // SAFETY: all pointers have offset at most 3 from v_base and dst, and are
+    // thus in-bounds by the precondition.
     unsafe {
         // Stably create two pairs a <= b and c <= d.
         let c1 = is_less(&*v_base.add(1), &*v_base);
@@ -287,22 +291,23 @@ pub unsafe fn sort4_stable<T, F: FnMut(&T, &T) -> bool>(
     }
 }
 
-/// SAFETY: The caller MUST guarantee that `v_base` is valid for 8 reads and writes, `scratch_base`
-/// and `dst` MUST be valid for 8 writes. The result will be stored in `dst[0..8]`.
+/// SAFETY: The caller MUST guarantee that `v_base` is valid for 8 reads and
+/// writes, `scratch_base` and `dst` MUST be valid for 8 writes. The result will
+/// be stored in `dst[0..8]`.
 unsafe fn sort8_stable<T: crate::Freeze, F: FnMut(&T, &T) -> bool>(
     v_base: *mut T,
     dst: *mut T,
     scratch_base: *mut T,
     is_less: &mut F,
 ) {
-    // SAFETY: The caller must guarantee that scratch_base is valid for 8 writes, and that v_base is
-    // valid for 8 reads.
+    // SAFETY: these pointers are all in-bounds by the precondition of our function.
     unsafe {
         sort4_stable(v_base, scratch_base, is_less);
         sort4_stable(v_base.add(4), scratch_base.add(4), is_less);
     }
 
-    // SAFETY: TODO
+    // SAFETY: scratch_base[0..8] is now initialized, allowing us to merge back
+    // into dst.
     unsafe {
         bidirectional_merge(&*ptr::slice_from_raw_parts(scratch_base, 8), dst, is_less);
     }
@@ -327,8 +332,8 @@ unsafe fn merge_up<T, F: FnMut(&T, &T) -> bool>(
     // }
     // dst = dst.add(1);
 
-    // SAFETY: The caller must guarantee that `left_src`, `right_src` are valid to read and
-    // `dst` is valid to write, while not aliasing.
+    // SAFETY: The caller must guarantee that `left_src`, `right_src` are valid
+    // to read and `dst` is valid to write, while not aliasing.
     unsafe {
         let is_l = !is_less(&*right_src, &*left_src);
         let src = if is_l { left_src } else { right_src };
@@ -360,8 +365,8 @@ unsafe fn merge_down<T, F: FnMut(&T, &T) -> bool>(
     // }
     // dst = dst.sub(1);
 
-    // SAFETY: The caller must guarantee that `left_src`, `right_src` are valid to read and
-    // `dst` is valid to write, while not aliasing.
+    // SAFETY: The caller must guarantee that `left_src`, `right_src` are valid
+    // to read and `dst` is valid to write, while not aliasing.
     unsafe {
         let is_l = !is_less(&*right_src, &*left_src);
         let src = if is_l { right_src } else { left_src };
@@ -376,22 +381,21 @@ unsafe fn merge_down<T, F: FnMut(&T, &T) -> bool>(
 
 /// Merge v assuming v[..len / 2] and v[len / 2..] are sorted.
 ///
-/// Original idea for bi-directional merging by Igor van den Hoven (quadsort), adapted to only use
-/// merge up and down. In contrast to the original parity_merge function, it performs 2 writes
-/// instead of 4 per iteration. Ord violation detection and uneven length handling were added.
+/// Original idea for bi-directional merging by Igor van den Hoven (quadsort),
+/// adapted to only use merge up and down. In contrast to the original
+/// parity_merge function, it performs 2 writes instead of 4 per iteration.
 ///
-// SAFETY: the caller must guarantee that `dst` is valid for v.len() writes.
-// Also `v.as_ptr` and `dst` must not alias. v.len() must be >= 2.
+/// # Safety
+/// The caller must guarantee that `dst` is valid for v.len() writes.
+/// Also `v.as_ptr()` and `dst` must not alias and v.len() must be >= 2.
+/// 
+/// Note that T must be Freeze, the comparison function is evaluated on outdated
+/// temporary 'copies' that may not end up in the final array.
 unsafe fn bidirectional_merge<T: crate::Freeze, F: FnMut(&T, &T) -> bool>(
     v: &[T],
     dst: *mut T,
     is_less: &mut F,
 ) {
-    // The caller must guarantee that T cannot modify itself inside is_less.
-    // merge_up and merge_down read left and right pointers and potentially modify the stack value
-    // they point to, if T has interior mutability. This may leave one or two potential writes to
-    // the stack value un-observed when dst is copied onto of src.
-
     // It helps to visualize the merge:
     //
     // Initial:
@@ -414,9 +418,12 @@ unsafe fn bidirectional_merge<T: crate::Freeze, F: FnMut(&T, &T) -> bool>(
     //       |left_rev     |           |right_rev
     //                     |dst_rev (in dst)
     //
-    //
-    // Note, the pointers that have been written, are now one past where they were read and
-    // copied. written == incremented or decremented + copy to dst.
+    // In each iteration one of left or right moves up one position, and one of
+    // left_rev or right_rev moves down one position, whereas dst always moves
+    // up one position and dst_rev always moves down one position. Assuming
+    // the input was sorted and the comparison function is correctly implemented
+    // at the end we will have left == left_rev + 1, and right == right_rev + 1,
+    // fully consuming the input having written it to dst.
 
     let len = v.len();
     let src = v.as_ptr();
@@ -424,9 +431,10 @@ unsafe fn bidirectional_merge<T: crate::Freeze, F: FnMut(&T, &T) -> bool>(
     let len_div_2 = len / 2;
     intrinsics::assume(len_div_2 != 0); // This can avoid useless code-gen.
 
-    // SAFETY: No matter what the result of the user-provided comparison function is, all 4 read
-    // pointers will always be in-bounds. Writing `dst` and `dst_rev` will always be in
-    // bounds if the caller guarantees that `dst` is valid for `v.len()` writes.
+    // SAFETY: no matter what the result of the user-provided comparison function
+    // is, all 4 read pointers will always be in-bounds. Writing `dst` and `dst_rev`
+    // will always be in bounds if the caller guarantees that `dst` is valid for
+    // `v.len()` writes.
     unsafe {
         let mut left = src;
         let mut right = src.add(len_div_2);
