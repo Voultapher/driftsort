@@ -103,7 +103,7 @@ fn stable_partition<T, F: FnMut(&T, &T) -> bool>(
     // side of `scratch`, while the values that compared as greater or equal than
     // `v[pivot_pos]` go to the right side of `scratch` in reverse. See
     // PartitionState for details.
-    
+
     // SAFETY: see individual comments.
     unsafe {
         // SAFETY: we made sure the scratch has length >= len and that pivot_pos
@@ -158,7 +158,7 @@ fn stable_partition<T, F: FnMut(&T, &T) -> bool>(
         // Copying scratch[0..num_left] and scratch[num_left..v.len()] back is thus
         // sound, as the values in scratch will never be read again, meaning our copies
         // semantically act as moves, permuting `v`.
-        
+
         // Copy all the elements < p directly from swap to v.
         let v_base = v.as_mut_ptr();
         ptr::copy_nonoverlapping(scratch_base, v_base, state.num_left);
@@ -217,7 +217,7 @@ impl<T> PartitionState<T> {
             // num_right < len, where num_right == i - num_left at the start of the ith
             // iteration (zero-indexed).
             self.scratch_rev = self.scratch_rev.sub(1);
-            
+
             // SAFETY: now we have scratch_rev == base + len - (i + 1). This means
             // scratch_rev + num_left == base + len - 1 - num_right < base + len.
             let dst_base = if towards_left {

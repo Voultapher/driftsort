@@ -388,7 +388,7 @@ unsafe fn merge_down<T, F: FnMut(&T, &T) -> bool>(
 /// # Safety
 /// The caller must guarantee that `dst` is valid for v.len() writes.
 /// Also `v.as_ptr()` and `dst` must not alias and v.len() must be >= 2.
-/// 
+///
 /// Note that T must be Freeze, the comparison function is evaluated on outdated
 /// temporary 'copies' that may not end up in the final array.
 unsafe fn bidirectional_merge<T: crate::Freeze, F: FnMut(&T, &T) -> bool>(
