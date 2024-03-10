@@ -4,39 +4,13 @@ use core::mem::MaybeUninit;
 
 use crate::merge::merge;
 
-// Nearly-Optimal Mergesorts: Fast, Practical Sorting Methods That Optimally
-// Adapt to Existing Runs by J. Ian Munro and Sebastian Wild.
-//
-// This method forms a binary merge tree, where each internal node corresponds
-// to a splitting point between the adjacent runs that have to be merged. If we
-// visualize our array as the number line from 0 to 1, we want to find the
-// dyadic fraction with smallest denominator that lies between the midpoints of
-// our to-be-merged slices. The exponent in the dyadic fraction indicates the
-// desired depth in the binary merge tree this internal node wishes to have.
-// This does not always correspond to the actual depth due to the inherent
-// imbalance in runs, but we follow it as closely as possible.
-//
-// As an optimization we rescale the number line from [0, 1) to [0, 2^62). Then
-// finding the simplest dyadic fraction between midpoints corresponds to finding
-// the most significant bit difference of the midpoints. We save scale_factor =
-// ceil(2^62 / n) to perform this rescaling using a multiplication, avoiding
-// having to repeatedly do integer divides. This rescaling isn't exact when n is
-// not a power of two since we use integers and not reals, but the result is
-// very close, and in fact when n < 2^30 the resulting tree is equivalent as the
-// approximation errors stay entirely in the lower order bits.
-//
-// Thus for the splitting point between two adjacent slices [a, b) and [b, c)
-// the desired depth of the corresponding merge node is CLZ((a+b)*f ^ (b+c)*f),
-// where CLZ counts the number of leading zeros in an integer and f is our scale
-// factor. Note that we omitted the division by two in the midpoint
-// calculations, as this simply shifts the bits by one position (and thus always
-// adds one to the result), and we only care about the relative depths.
-//
-// Finally, if we try to upper bound x = (a+b)*f giving x = (n-1 + n) * ceil(2^62 / n) then
-//    x < (2^62 / n + 1) * 2n
-//    x < 2^63 + 2n
-// So as long as n < 2^62 we find that x < 2^64, meaning our operations do not
-// overflow.
+/// Sorts `v` based on comparison function `is_less`. If `eager_sort` is true, it will only do
+/// small-sort + physical merge, ensuring O(N * log(N)) worst-case complexity.`scratch.len()` must
+/// be at least `cmp::max(v.len() / 2, MIN_SMALL_SORT_SCRATCH_LEN)` otherwise the implementation may
+/// abort. Fully ascending and descending inputs will be sorted with exactly N - 1 comparisons.
+///
+/// This is the main loop for driftsort, which uses powersort's heuristic to determine in which
+/// order to merge runs, see below for details.
 pub fn sort<T, F: FnMut(&T, &T) -> bool>(
     v: &mut [T],
     scratch: &mut [MaybeUninit<T>],
@@ -143,6 +117,65 @@ pub fn sort<T, F: FnMut(&T, &T) -> bool>(
     }
 }
 
+// Nearly-Optimal Mergesorts: Fast, Practical Sorting Methods That Optimally
+// Adapt to Existing Runs by J. Ian Munro and Sebastian Wild.
+//
+// This method forms a binary merge tree, where each internal node corresponds
+// to a splitting point between the adjacent runs that have to be merged. If we
+// visualize our array as the number line from 0 to 1, we want to find the
+// dyadic fraction with smallest denominator that lies between the midpoints of
+// our to-be-merged slices. The exponent in the dyadic fraction indicates the
+// desired depth in the binary merge tree this internal node wishes to have.
+// This does not always correspond to the actual depth due to the inherent
+// imbalance in runs, but we follow it as closely as possible.
+//
+// As an optimization we rescale the number line from [0, 1) to [0, 2^62). Then
+// finding the simplest dyadic fraction between midpoints corresponds to finding
+// the most significant bit difference of the midpoints. We save scale_factor =
+// ceil(2^62 / n) to perform this rescaling using a multiplication, avoiding
+// having to repeatedly do integer divides. This rescaling isn't exact when n is
+// not a power of two since we use integers and not reals, but the result is
+// very close, and in fact when n < 2^30 the resulting tree is equivalent as the
+// approximation errors stay entirely in the lower order bits.
+//
+// Thus for the splitting point between two adjacent slices [a, b) and [b, c)
+// the desired depth of the corresponding merge node is CLZ((a+b)*f ^ (b+c)*f),
+// where CLZ counts the number of leading zeros in an integer and f is our scale
+// factor. Note that we omitted the division by two in the midpoint
+// calculations, as this simply shifts the bits by one position (and thus always
+// adds one to the result), and we only care about the relative depths.
+//
+// Finally, if we try to upper bound x = (a+b)*f giving x = (n-1 + n) * ceil(2^62 / n) then
+//    x < (2^62 / n + 1) * 2n
+//    x < 2^63 + 2n
+// So as long as n < 2^62 we find that x < 2^64, meaning our operations do not
+// overflow.
+
+// Note: merge_tree_depth output is < 64 when left < right as f*x and f*y must
+// differ in some bit, and is <= 64 always.
+#[inline(always)]
+fn merge_tree_depth(left: usize, mid: usize, right: usize, scale_factor: u64) -> u8 {
+    let x = left as u64 + mid as u64;
+    let y = mid as u64 + right as u64;
+    ((scale_factor * x) ^ (scale_factor * y)).leading_zeros() as u8
+}
+
+fn sqrt_approx(n: usize) -> usize {
+    // Note that sqrt(n) = n^(1/2), and that 2^log2(n) = n. We combine these
+    // two facts to approximate sqrt(n) as 2^(log2(n) / 2). Because our integer
+    // log floors we want to add 0.5 to compensate for this on average, so our
+    // initial approximation is 2^((1 + floor(log2(n))) / 2).
+    //
+    // We then apply an iteration of Newton's method to improve our
+    // approximation, which for sqrt(n) is a1 = (a0 + n / a0) / 2.
+    //
+    // Finally we note that the exponentiation / division can be done directly
+    // with shifts. We OR with 1 to avoid zero-checks in the integer log.
+    let ilog = (n | 1).ilog2();
+    let shift = (1 + ilog) / 2;
+    ((1 << shift) + (n >> shift)) / 2
+}
+
 // Lazy logical runs as in Glidesort.
 #[inline(always)]
 fn logical_merge<T, F: FnMut(&T, &T) -> bool>(
@@ -180,31 +213,6 @@ fn merge_tree_scale_factor(n: usize) -> u64 {
     }
 
     ((1 << 62) + n as u64 - 1) / n as u64
-}
-
-// Note: merge_tree_depth output is < 64 when left < right as f*x and f*y must
-// differ in some bit, and is <= 64 always.
-#[inline(always)]
-fn merge_tree_depth(left: usize, mid: usize, right: usize, scale_factor: u64) -> u8 {
-    let x = left as u64 + mid as u64;
-    let y = mid as u64 + right as u64;
-    ((scale_factor * x) ^ (scale_factor * y)).leading_zeros() as u8
-}
-
-fn sqrt_approx(n: usize) -> usize {
-    // Note that sqrt(n) = n^(1/2), and that 2^log2(n) = n. We combine these
-    // two facts to approximate sqrt(n) as 2^(log2(n) / 2). Because our integer
-    // log floors we want to add 0.5 to compensate for this on average, so our
-    // initial approximation is 2^((1 + floor(log2(n))) / 2).
-    //
-    // We then apply an iteration of Newton's method to improve our
-    // approximation, which for sqrt(n) is a1 = (a0 + n / a0) / 2.
-    //
-    // Finally we note that the exponentiation / division can be done directly
-    // with shifts. We OR with 1 to avoid zero-checks in the integer log.
-    let ilog = (n | 1).ilog2();
-    let shift = (1 + ilog) / 2;
-    ((1 << shift) + (n >> shift)) / 2
 }
 
 /// Creates a new logical run.
