@@ -4,13 +4,15 @@ use core::mem::MaybeUninit;
 
 use crate::merge::merge;
 
-/// Sorts `v` based on comparison function `is_less`. If `eager_sort` is true, it will only do
-/// small-sort + physical merge, ensuring O(N * log(N)) worst-case complexity.`scratch.len()` must
-/// be at least `cmp::max(v.len() / 2, MIN_SMALL_SORT_SCRATCH_LEN)` otherwise the implementation may
-/// abort. Fully ascending and descending inputs will be sorted with exactly N - 1 comparisons.
+/// Sorts `v` based on comparison function `is_less`. If `eager_sort` is true,
+/// it will only do small-sorts and physical merges, ensuring O(N * log(N))
+/// worst-case complexity. `scratch.len()` must be at least `max(v.len() / 2,
+/// MIN_SMALL_SORT_SCRATCH_LEN)` otherwise the implementation may abort.
+/// Fully ascending and descending inputs will be sorted with exactly N - 1
+/// comparisons.
 ///
-/// This is the main loop for driftsort, which uses powersort's heuristic to determine in which
-/// order to merge runs, see below for details.
+/// This is the main loop for driftsort, which uses powersort's heuristic to
+/// determine in which order to merge runs, see below for details.
 pub fn sort<T, F: FnMut(&T, &T) -> bool>(
     v: &mut [T],
     scratch: &mut [MaybeUninit<T>],
@@ -23,14 +25,14 @@ pub fn sort<T, F: FnMut(&T, &T) -> bool>(
     }
     let scale_factor = merge_tree_scale_factor(len);
 
-    // It's important to have a relatively high entry barrier for pre-sorted runs, as the presence
-    // of a single such run will force on average several merge operations and shrink the maximum
-    // quicksort size a lot. For that reason we use sqrt(len) as our pre-sorted run threshold.
+    // It's important to have a relatively high entry barrier for pre-sorted
+    // runs, as the presence of a single such run will force on average several
+    // merge operations and shrink the maximum quicksort size a lot. For that
+    // reason we use sqrt(len) as our pre-sorted run threshold.
     const MIN_SQRT_RUN_LEN: usize = 64;
-
     let min_good_run_len = if len <= (MIN_SQRT_RUN_LEN * MIN_SQRT_RUN_LEN) {
-        // For small input length `MIN_SQRT_RUN_LEN` would break pattern detection of full or nearly
-        // sorted inputs.
+        // For small input length `MIN_SQRT_RUN_LEN` would break pattern
+        // detection of full or nearly sorted inputs.
         cmp::min(len - len / 2, MIN_SQRT_RUN_LEN)
     } else {
         sqrt_approx(len)
@@ -216,10 +218,11 @@ fn logical_merge<T, F: FnMut(&T, &T) -> bool>(
 
 /// Creates a new logical run.
 ///
-/// A logical run can either be sorted or unsorted. If there is a pre-existing run that clears the
-/// `min_good_run_len` threshold it is returned as a sorted run. If not, the result depends on the
-/// value of `eager_sort`. If it is true, then a sorted run of length `T::SMALL_SORT_THRESHOLD` is
-/// returned, and if it is false a unsorted run of length `min_good_run_len`.
+/// A logical run can either be sorted or unsorted. If there is a pre-existing
+/// run that clears the `min_good_run_len` threshold it is returned as a sorted
+/// run. If not, the result depends on the value of `eager_sort`. If it is true,
+/// then a sorted run of length `T::SMALL_SORT_THRESHOLD` is returned, and if it
+/// is false an unsorted run of length `min_good_run_len` is returned.
 fn create_run<T, F: FnMut(&T, &T) -> bool>(
     v: &mut [T],
     scratch: &mut [MaybeUninit<T>],
@@ -230,12 +233,10 @@ fn create_run<T, F: FnMut(&T, &T) -> bool>(
     use crate::smallsort::SmallSortTypeImpl;
 
     let len = v.len();
-
     if len >= min_good_run_len {
         let (run_len, was_reversed) = find_existing_run(v, is_less);
-
-        // SAFETY: find_existing_run promises to return a valid run_len.
         unsafe {
+            // SAFETY: find_existing_run promises to return a valid run_len.
             intrinsics::assume(run_len <= len);
         }
 
@@ -249,14 +250,10 @@ fn create_run<T, F: FnMut(&T, &T) -> bool>(
     }
 
     if eager_sort {
-        // This branch is the algorithmic worst-case fallback. It MUST sustain the O(N * log(N))
-        // worst-case guarantee. Where N is the total length of the slice that is sorted, not
-        // necessarily the sub-slice passed to `create_run`.
-
-        // We call stable_quicksort with a len that will immediately call small-sort. By not
-        // calling the small-sort directly here it can always be inlined into the quicksort
-        // itself, making the recursive base case faster and is generally more binary-size
-        // efficient.
+        // We call stable_quicksort with a len that will immediately call small-sort.
+        // By not calling the small-sort directly here it can always be inlined into
+        // the quicksort itself, making the recursive base case faster and is generally
+        // more binary-size efficient.
         let eager_run_len = cmp::min(T::SMALL_SORT_THRESHOLD, len);
         crate::quicksort::stable_quicksort(&mut v[..eager_run_len], scratch, 0, None, is_less);
         DriftsortRun::new_sorted(eager_run_len)
