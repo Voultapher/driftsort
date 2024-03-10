@@ -99,55 +99,24 @@ fn stable_partition<T, F: FnMut(&T, &T) -> bool>(
     let v_base = v.as_ptr();
     let scratch_base = MaybeUninit::slice_as_mut_ptr(scratch);
 
-    // The core idea is to write the values that compare as less-than to the left side of `scratch`,
-    // while the values that compared as greater or equal than `v[pivot_pos]` go to the right side
-    // of `scratch` in reverse. Most of the inner complexity stems from avoiding self-comparisons
-    // with pivot and delayed pivot hole filling because of non `Freeze` types.
-
-    // Regarding auto unrolling and manual unrolling. Auto unrolling as tested with rustc 1.75 is
-    // somewhat run-time and binary-size inefficient, because it performs additional math to
-    // calculate the loop end, which we can avoid by precomputing the loop end. Also auto unrolling
-    // only happens on x86 but not on Arm where doing so for the Firestorm micro-architecture yields
-    // a 15+% performance improvement. Manual unrolling via repeated code has a large negative
-    // impact on debug compile-times, and unrolling via `for _ in 0..UNROLL_LEN` has a 10-20% perf
-    // penalty when compiling with `opt-level=s` which is deemed unacceptable for such a crucial
-    // component of the sort implementation.
-
-    // SAFETY: we checked that pivot_pos is in-bounds above, and that scratch has length at least
-    // len. As we do binary classification into lt or ge, the invariant num_left + num_right = i
-    // always holds at the start of each iteration. For micro-optimization reasons we write i -
-    // num_left instead of num_right. Since num_left increases by at most 1 each iteration and since
-    // i < len, this proves our destination indices num_left and len - 1 - num_right stay in-bounds,
-    // and are never equal except the final iteration when num_left = len - 1 - (len - 1 - num_left)
-    // = len - 1 - num_right. We write one element to scratch each iteration thus scratch[0..len]
-    // will be initialized with a permutation of v. The body of `loop` has nearly the same semantics
-    // as:
-    // ```
-    // for 0..len {
-    //     state.partition_one(is_less(&*state.scan, &*pivot));
-    // }
-    // ```
-    // Where we treat `state.scan == pivot` specially to avoid calling is_less with the same value.
-    // self comparison is not directly UB or problematic in and by itself, but its possible that
-    // user logic depends on this not occurring. E.g. where the comparison function takes a lock,
-    // which would deadlock.
+    // The core idea is to write the values that compare as less-than to the left
+    // side of `scratch`, while the values that compared as greater or equal than
+    // `v[pivot_pos]` go to the right side of `scratch` in reverse.
     unsafe {
-        // SAFETY: exactly the same invariants and logic as the non-specialized impl. And we do
-        // naive loop unrolling where the exact same loop body is just repeated.
+        // SAFETY: we made sure the scratch has length >= len and that pivot_pos
+        // is in-bounds. v and scratch are disjoint slices.
         let pivot = v_base.add(pivot_pos);
-
-        let mut state = PartitionState {
-            scratch_base,
-            scan: v_base,
-            num_left: 0,
-            scratch_rev: scratch_base.add(len),
-        };
+        let mut state = PartitionState::new(v_base, scratch_base, len);
 
         let mut pivot_in_scratch = ptr::null_mut();
         let mut loop_end_pos = pivot_pos;
 
-        // Ideally this outer loop won't be unrolled, to save binary size.
+        // SAFETY: this loop is equivalent to calling state.partition_one
+        // exactly len times.
         loop {
+            // Ideally the outer loop won't be unrolled, to save binary size,
+            // but we do want the inner loop to be unrolled for small types, as
+            // this gave significant performance boosts in benchmarks.
             if const { mem::size_of::<T>() <= 16 } {
                 const UNROLL_LEN: usize = 4;
                 let unroll_end = v_base.add(loop_end_pos.saturating_sub(UNROLL_LEN - 1));
@@ -168,21 +137,26 @@ fn stable_partition<T, F: FnMut(&T, &T) -> bool>(
                 break;
             }
 
-            // Handle pivot, doing it this way neatly handles type with interior mutability and
-            // avoids self comparison as well as a branch in the inner partition loop.
+            // We avoid comparing pivot with itself, as this could create deadlocks for
+            // certain comparison operators. We also store its location later for later.
             pivot_in_scratch = state.partition_one(pivot_goes_left);
 
             loop_end_pos = len;
         }
 
-        // `pivot` must only be copied after all possible modifications to it have been observed.
-        ptr::copy_nonoverlapping(pivot, pivot_in_scratch, 1);
+        // `pivot` must be copied into its correct position again, because a
+        // comparison operator might have modified it.
+        if has_direct_interior_mutability::<T>() {
+            ptr::copy_nonoverlapping(pivot, pivot_in_scratch, 1);
+        }
 
-        // SAFETY: partition_fill_scratch guarantees that scratch is initialized with a permuted
-        // copy of `v`, and that num_left <= v.len(). Copying scratch[0..num_left] and
-        // scratch[num_left..v.len()] back is thus sound, as the values in scratch will never be read
-        // again, meaning our copies semantically act as moves, permuting `v`. Copy all the elements
-        // < p directly from swap to v.
+        // SAFETY: partition_one being called exactly len times guarantees that scratch
+        // is initialized with a permuted copy of `v`, and that num_left <= v.len().
+        // Copying scratch[0..num_left] and scratch[num_left..v.len()] back is thus
+        // sound, as the values in scratch will never be read again, meaning our copies
+        // semantically act as moves, permuting `v`.
+        
+        // Copy all the elements < p directly from swap to v.
         let v_base = v.as_mut_ptr();
         ptr::copy_nonoverlapping(scratch_base, v_base, state.num_left);
 
@@ -212,24 +186,40 @@ struct PartitionState<T> {
 }
 
 impl<T> PartitionState<T> {
-    /// Depending on the value of `towards_left` will write a value to the growing left or right
-    /// side of the scratch memory. Track state accordingly. This forms the branchless core of the
-    /// partition.
-    ///
-    /// SAFETY: The caller must ensure that `PartitionState` is initialized correctly, where
-    /// `scratch_base` points to a contiguous area of length `len` memory that is valid for writing.
-    /// `scan` must point initially point to a contiguous area of `len` values that are valid to be
-    /// read. In addition this function MUST be called exactly `len` times, otherwise the values
-    /// written to the `scratch_base` region must considered incomplete and not read again.
-    unsafe fn partition_one(&mut self, towards_left: bool) -> *mut T {
-        // SAFETY: See function safety comment.
-        unsafe {
-            self.scratch_rev = self.scratch_rev.sub(1);
+    /// # Safety
+    /// scan and scratch must point to valid disjoint buffers of length len. The
+    /// scan buffer must be initialized.
+    unsafe fn new(scan: *const T, scratch: *mut T, len: usize) -> Self {
+        Self {
+            scratch_base: scratch,
+            scan,
+            num_left: 0,
+            scratch_rev: scratch.add(len),
+        }
+    }
 
+    /// Depending on the value of `towards_left` this function will write a value
+    /// to the growing left or right side of the scratch memory. This forms the
+    /// branchless core of the partition.
+    ///
+    /// # Safety
+    /// This function may be called at most `len` times. If it is called exactly
+    /// `len` times the scratch buffer then contains a copy of each element from
+    /// the scan buffer exactly once - a permutation, and num_left <= len.
+    unsafe fn partition_one(&mut self, towards_left: bool) -> *mut T {
+        unsafe {
+            // SAFETY: in-bounds because this function is called at most len times, and thus
+            // right now is incremented at most len - 1 times. Similarly, num_left < len and
+            // num_right < len, where num_right == i - num_left at the start of the ith
+            // iteration (zero-indexed).
+            self.scratch_rev = self.scratch_rev.sub(1);
+            
+            // SAFETY: now we have scratch_rev == base + len - (i + 1). This means
+            // scratch_rev + num_left == base + len - 1 - num_right < base + len.
             let dst_base = if towards_left {
-                self.scratch_base // i + num_left
+                self.scratch_base
             } else {
-                self.scratch_rev // len - (i + 1) + num_left = len - 1 - num_right
+                self.scratch_rev
             };
             let dst = dst_base.add(self.num_left);
             ptr::copy_nonoverlapping(self.scan, dst, 1);
