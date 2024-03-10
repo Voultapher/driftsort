@@ -101,7 +101,10 @@ fn stable_partition<T, F: FnMut(&T, &T) -> bool>(
 
     // The core idea is to write the values that compare as less-than to the left
     // side of `scratch`, while the values that compared as greater or equal than
-    // `v[pivot_pos]` go to the right side of `scratch` in reverse.
+    // `v[pivot_pos]` go to the right side of `scratch` in reverse. See
+    // PartitionState for details.
+    
+    // SAFETY: see individual comments.
     unsafe {
         // SAFETY: we made sure the scratch has length >= len and that pivot_pos
         // is in-bounds. v and scratch are disjoint slices.
@@ -207,6 +210,7 @@ impl<T> PartitionState<T> {
     /// `len` times the scratch buffer then contains a copy of each element from
     /// the scan buffer exactly once - a permutation, and num_left <= len.
     unsafe fn partition_one(&mut self, towards_left: bool) -> *mut T {
+        // SAFETY: see individual comments.
         unsafe {
             // SAFETY: in-bounds because this function is called at most len times, and thus
             // right now is incremented at most len - 1 times. Similarly, num_left < len and

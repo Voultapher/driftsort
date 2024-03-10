@@ -77,13 +77,14 @@ pub fn sort<T, F: FnMut(&T, &T) -> bool>(
         // Process the merge nodes between earlier runs[i] that have a desire to
         // be deeper in the merge tree than the merge node for the splitpoint
         // between prev_run and next_run.
+        //
+        // SAFETY: first note that this is the only place we modify stack_len,
+        // runs or desired depths. We maintain the following invariants:
+        //  1. The first stack_len elements of runs/desired_depths are initialized.
+        //  2. For all valid i > 0, desired_depths[i] < desired_depths[i+1].
+        //  3. The sum of all valid runs[i].len() plus prev_run.len() equals
+        //     scan_idx.
         unsafe {
-            // SAFETY: first note that this is the only place we modify stack_len,
-            // runs or desired depths. We maintain the following invariants:
-            //  1. The first stack_len elements of runs/desired_depths are initialized.
-            //  2. For all valid i > 0, desired_depths[i] < desired_depths[i+1].
-            //  3. The sum of all valid runs[i].len() plus prev_run.len() equals
-            //     scan_idx.
             while stack_len > 1 && *desired_depths.add(stack_len - 1) >= desired_depth {
                 // Desired depth greater than the upcoming desired depth, pop
                 // left neighbor run from stack and merge into prev_run.
@@ -235,10 +236,9 @@ fn create_run<T, F: FnMut(&T, &T) -> bool>(
     let len = v.len();
     if len >= min_good_run_len {
         let (run_len, was_reversed) = find_existing_run(v, is_less);
-        unsafe {
-            // SAFETY: find_existing_run promises to return a valid run_len.
-            intrinsics::assume(run_len <= len);
-        }
+
+        // SAFETY: find_existing_run promises to return a valid run_len.
+        unsafe { intrinsics::assume(run_len <= len) };
 
         if run_len >= min_good_run_len {
             if was_reversed {
@@ -272,10 +272,10 @@ fn find_existing_run<T, F: FnMut(&T, &T) -> bool>(v: &[T], is_less: &mut F) -> (
         return (len, false);
     }
 
+    // SAFETY: We checked that len >= 2, so 0 and 1 are valid indices.
+    // This also means that run_len < len implies run_len and run_len - 1
+    // are valid indices as well.
     unsafe {
-        // SAFETY: We checked that len >= 2, so 0 and 1 are valid indices.
-        // This also means that run_len < len implies run_len and
-        // run_len - 1 are valid indices as well.
         let mut run_len = 2;
         let strictly_descending = is_less(v.get_unchecked(1), v.get_unchecked(0));
         if strictly_descending {
@@ -316,7 +316,7 @@ impl DriftsortRun {
 
     #[inline(always)]
     fn new_unsorted(length: usize) -> Self {
-        Self((length << 1) | 0)
+        Self(length << 1)
     }
 
     #[inline(always)]
