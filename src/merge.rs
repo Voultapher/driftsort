@@ -2,8 +2,8 @@ use core::cmp;
 use core::mem::MaybeUninit;
 use core::ptr;
 
-/// Merges non-decreasing runs `v[..mid]` and `v[mid..]` using `buf` as temporary storage, and
-/// stores the result into `v[..]`.
+/// Merges non-decreasing runs `v[..mid]` and `v[mid..]` using `scratch` as
+/// temporary storage, and stores the result into `v[..]`.
 pub fn merge<T, F: FnMut(&T, &T) -> bool>(
     v: &mut [T],
     scratch: &mut [MaybeUninit<T>],
@@ -16,22 +16,23 @@ pub fn merge<T, F: FnMut(&T, &T) -> bool>(
         return;
     }
 
-    // SAFETY: We checked that the two slices are non-empty and `mid` is in bounds. We checked that
-    // the Buffer `scratch` has enough capacity to hold a copy of the shorter slice. `merge_up` and
-    // `merge_down` are written in such a way that they uphold the contract described in
-    // `MergeState::drop`.
+    // SAFETY: We checked that the two slices are non-empty and `mid` is in-bounds.
+    // We checked that the buffer `scratch` has enough capacity to hold a copy of
+    // the shorter slice. `merge_up` and `merge_down` are written in such a way that
+    // they uphold the contract described in `MergeState::drop`.
     unsafe {
-        // The merge process first copies the shorter run into `buf`. Then it traces the newly
-        // copied run and the longer run forwards (or backwards), comparing their next unconsumed
-        // elements and copying the lesser (or greater) one into `v`.
+        // The merge process first copies the shorter run into `buf`. Then it traces
+        // the newly copied run and the longer run forwards (or backwards), comparing
+        // their next unconsumed elements and copying the lesser (or greater) one into `v`.
         //
-        // As soon as the shorter run is fully consumed, the process is done. If the longer run gets
-        // consumed first, then we must copy whatever is left of the shorter run into the remaining
-        // gap in `v`.
+        // As soon as the shorter run is fully consumed, the process is done. If the
+        // longer run gets consumed first, then we must copy whatever is left of the
+        // shorter run into the remaining gap in `v`.
         //
-        // Intermediate state of the process is always tracked by `gap`, which serves two purposes:
-        // 1. Protects integrity of `v` from panics in `is_less`.
-        // 2. Fills the remaining gap in `v` if the longer run gets consumed first.
+        // Intermediate state of the process is always tracked by `gap`, which serves
+        // two purposes:
+        //  1. Protects integrity of `v` from panics in `is_less`.
+        //  2. Fills the remaining gap in `v` if the longer run gets consumed first.
 
         let buf = MaybeUninit::slice_as_mut_ptr(scratch);
 
@@ -43,7 +44,6 @@ pub fn merge<T, F: FnMut(&T, &T) -> bool>(
         let right_len = len - mid;
 
         let left_is_shorter = left_len <= right_len;
-
         let save_base = if left_is_shorter { v_base } else { v_mid };
         let save_len = if left_is_shorter { left_len } else { right_len };
 
@@ -60,8 +60,8 @@ pub fn merge<T, F: FnMut(&T, &T) -> bool>(
         } else {
             merge_state.merge_down(v_base, buf, v_end, is_less);
         }
-        // Finally, `merge_state` gets dropped. If the shorter run was not fully consumed, whatever
-        // remains of it will now be copied into the hole in `v`.
+        // Finally, `merge_state` gets dropped. If the shorter run was not fully
+        // consumed, whatever remains of it will now be copied into the hole in `v`.
     }
 
     // When dropped, copies the range `start..end` into `dst..`.
@@ -123,10 +123,11 @@ pub fn merge<T, F: FnMut(&T, &T) -> bool>(
 
     impl<T> Drop for MergeState<T> {
         fn drop(&mut self) {
-            // SAFETY: The user of MergeState MUST ensure, that at any point this drop impl MAY run,
-            // for example when the user provided `is_less` panics, that copying the contiguous
-            // region between `start` and `end` to `dst` will leave the input slice `v` with each
-            // original element and all possible modifications observed.
+            // SAFETY: The user of MergeState MUST ensure, that at any point this drop
+            // impl MAY run, for example when the user provided `is_less` panics, that
+            // copying the contiguous region between `start` and `end` to `dst` will
+            // leave the input slice `v` with each original element and all possible
+            // modifications observed.
             unsafe {
                 let len = self.end.sub_ptr(self.start);
                 ptr::copy_nonoverlapping(self.start, self.dst, len);
