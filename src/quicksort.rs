@@ -119,7 +119,9 @@ fn stable_partition<T, F: FnMut(&T, &T) -> bool>(
         loop {
             // Ideally the outer loop won't be unrolled, to save binary size,
             // but we do want the inner loop to be unrolled for small types, as
-            // this gave significant performance boosts in benchmarks.
+            // this gave significant performance boosts in benchmarks. Unrolling
+            // through for _ in 0..UNROLL_LEN { .. } instead of manually improves
+            // compile times but has a ~10-20% performance penalty on opt-level=s.
             if const { mem::size_of::<T>() <= 16 } {
                 const UNROLL_LEN: usize = 4;
                 let unroll_end = v_base.add(loop_end_pos.saturating_sub(UNROLL_LEN - 1));

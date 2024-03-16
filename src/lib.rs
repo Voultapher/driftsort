@@ -90,31 +90,32 @@ fn driftsort_main<T, F: FnMut(&T, &T) -> bool, BufT: BufGuard<T>>(v: &mut [T], i
     // For small inputs 4KiB of stack storage suffices, which allows us to avoid
     // calling the (de-)allocator. Benchmarks showed this was quite beneficial.
     let mut stack_buf = AlignedStorage::<T, 4096>::new();
-    let stack_scratch = stack_buf.as_mut_uninit_slice();
+    let stack_scratch = stack_buf.as_uninit_slice_mut();
     let mut heap_buf;
     let scratch = if stack_scratch.len() >= alloc_len {
         stack_scratch
     } else {
         heap_buf = BufT::with_capacity(alloc_len);
-        heap_buf.as_mut_uninit_slice()
+        heap_buf.as_uninit_slice_mut()
     };
 
-    // For small inputs using quicksort is not yet beneficial, and two
-    // small-sorts plus a single merge outperforms it, so use eager mode.
+    // For small inputs using quicksort is not yet beneficial, and a single
+    // small-sort or two small-sorts plus a single merge outperforms it, so use
+    // eager mode.
     let eager_sort = len <= T::SMALL_SORT_THRESHOLD * 2;
     drift::sort(v, scratch, eager_sort, is_less);
 }
 
 trait BufGuard<T> {
     fn with_capacity(capacity: usize) -> Self;
-    fn as_mut_uninit_slice(&mut self) -> &mut [MaybeUninit<T>];
+    fn as_uninit_slice_mut(&mut self) -> &mut [MaybeUninit<T>];
 }
 
 impl<T> BufGuard<T> for Vec<T> {
     fn with_capacity(capacity: usize) -> Self {
         Vec::with_capacity(capacity)
     }
-    fn as_mut_uninit_slice(&mut self) -> &mut [MaybeUninit<T>] {
+    fn as_uninit_slice_mut(&mut self) -> &mut [MaybeUninit<T>] {
         self.spare_capacity_mut()
     }
 }
@@ -133,7 +134,7 @@ impl<T, const N: usize> AlignedStorage<T, N> {
         }
     }
 
-    fn as_mut_uninit_slice(&mut self) -> &mut [MaybeUninit<T>] {
+    fn as_uninit_slice_mut(&mut self) -> &mut [MaybeUninit<T>] {
         let len = N / mem::size_of::<T>();
 
         // SAFETY: `_align` ensures we are correctly aligned.
