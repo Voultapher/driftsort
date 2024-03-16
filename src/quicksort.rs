@@ -27,6 +27,8 @@ pub fn stable_quicksort<T, F: FnMut(&T, &T) -> bool>(
         }
 
         if limit == 0 {
+            // We have had too many bad pivots, switch to O(n log n) fallback
+            // algorithm. In our case that is driftsort in eager mode.
             crate::drift::sort(v, scratch, true, is_less);
             return;
         }
