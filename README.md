@@ -11,6 +11,10 @@ pdqsort.
 This implementation is designed to be robust and highly adaptive to real world
 patterns, while putting reasonable limits on the code size.
 
+## Result
+
+A comprehensive analysis of driftsort can be found [here](https://github.com/Voultapher/sort-research-rs/blob/main/writeup/driftsort_introduction/text.md).
+
 ## Goals
 
 - Stable `slice::sort` replacement
