@@ -158,6 +158,7 @@ unsafe impl<T: ?Sized> Freeze for *mut T {}
 unsafe impl<T: ?Sized> Freeze for &T {}
 unsafe impl<T: ?Sized> Freeze for &mut T {}
 
+#[const_trait]
 trait IsFreeze {
     const IS_FREEZE: bool;
 }
