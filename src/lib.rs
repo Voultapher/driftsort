@@ -10,7 +10,8 @@
     core_intrinsics,
     sized_type_properties,
     generic_const_exprs,
-    maybe_uninit_uninit_array
+    // maybe_uninit_uninit_array
+    maybe_uninit_array_assume_init
 )]
 
 use core::cmp::{self, Ordering};
@@ -130,7 +131,7 @@ impl<T, const N: usize> AlignedStorage<T, N> {
     fn new() -> Self {
         Self {
             _align: [],
-            storage: MaybeUninit::uninit_array(),
+            storage: unsafe { MaybeUninit::uninit().assume_init() },
         }
     }
 

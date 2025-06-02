@@ -81,7 +81,7 @@ pub fn merge<T, F: FnMut(&T, &T) -> bool>(
             let left = &mut self.start;
             let out = &mut self.dst;
 
-            while *left != self.end && right as *const T != right_end {
+            while *left != self.end && !std::ptr::eq(right, right_end) {
                 let consume_left = !is_less(&*right, &**left);
 
                 let src = if consume_left { *left } else { right };
@@ -114,7 +114,7 @@ pub fn merge<T, F: FnMut(&T, &T) -> bool>(
                 self.dst = left.add(!consume_left as usize);
                 self.end = right.add(consume_left as usize);
 
-                if self.dst as *const T == left_end || self.end as *const T == right_end {
+                if std::ptr::eq(self.dst, left_end) || std::ptr::eq(self.end, right_end) {
                     break;
                 }
             }
@@ -129,7 +129,7 @@ pub fn merge<T, F: FnMut(&T, &T) -> bool>(
             // leave the input slice `v` with each original element and all possible
             // modifications observed.
             unsafe {
-                let len = self.end.sub_ptr(self.start);
+                let len = self.end.offset_from(self.start) as usize;
                 ptr::copy_nonoverlapping(self.start, self.dst, len);
             }
         }
