@@ -184,7 +184,6 @@ fn sqrt_approx(n: usize) -> usize {
     // Finally we note that the exponentiation / division can be done directly
     // with shifts. We OR with 1 to avoid zero-checks in the integer log.
     let ilog = (n | 1).ilog2();
-    // let shift = (1 + ilog) / 2;
     let shift = (1 + ilog).div_ceil(2);
     ((1 << shift) + (n >> shift)) / 2
 }
