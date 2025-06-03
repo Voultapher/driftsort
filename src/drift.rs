@@ -159,7 +159,6 @@ fn merge_tree_scale_factor(n: usize) -> u64 {
         panic!("Platform not supported");
     }
 
-    // ((1 << 62) + n as u64 - 1) / n as u64
     ((1 << 62) + n as u64 - 1).div_ceil(n as u64)
 }
 
