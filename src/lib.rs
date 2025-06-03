@@ -10,7 +10,7 @@
     core_intrinsics,
     sized_type_properties,
     generic_const_exprs,
-    maybe_uninit_uninit_array
+    maybe_uninit_uninit_array_transpose
 )]
 
 use core::cmp::{self, Ordering};
@@ -128,9 +128,11 @@ struct AlignedStorage<T, const N: usize> {
 
 impl<T, const N: usize> AlignedStorage<T, N> {
     fn new() -> Self {
+        let storage: [MaybeUninit<u8>; N] = MaybeUninit::uninit().transpose();
+
         Self {
             _align: [],
-            storage: MaybeUninit::uninit_array(),
+            storage: storage,
         }
     }
 
