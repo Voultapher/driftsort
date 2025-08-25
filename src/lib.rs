@@ -84,8 +84,10 @@ fn driftsort_main<T, F: FnMut(&T, &T) -> bool, BufT: BufGuard<T>>(v: &mut [T], i
     const MAX_FULL_ALLOC_BYTES: usize = 8_000_000; // 8MB
     let max_full_alloc = MAX_FULL_ALLOC_BYTES / mem::size_of::<T>();
     let len = v.len();
-    let alloc_len = cmp::max(len / 2, cmp::min(len, max_full_alloc));
-    let alloc_len = cmp::max(alloc_len, crate::smallsort::MIN_SMALL_SORT_SCRATCH_LEN);
+    let alloc_len = cmp::max(
+        cmp::max(len - len / 2, cmp::min(len, max_full_alloc)),
+        crate::smallsort::MIN_SMALL_SORT_SCRATCH_LEN,
+    );
 
     // For small inputs 4KiB of stack storage suffices, which allows us to avoid
     // calling the (de-)allocator. Benchmarks showed this was quite beneficial.
