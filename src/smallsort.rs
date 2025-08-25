@@ -1,5 +1,5 @@
 use core::intrinsics;
-use core::mem::{self, ManuallyDrop, MaybeUninit};
+use core::mem::{self, MaybeUninit};
 use core::ptr;
 
 // It's important to differentiate between SMALL_SORT_THRESHOLD performance for
@@ -30,16 +30,22 @@ impl<T> SmallSortTypeImpl for T {
     #[inline(always)]
     default fn sort_small<F: FnMut(&T, &T) -> bool>(
         v: &mut [T],
-        _scratch: &mut [MaybeUninit<T>],
+        scratch: &mut [MaybeUninit<T>],
         is_less: &mut F,
     ) {
+        if scratch.is_empty() {
+            intrinsics::abort();
+        }
+
+        let scratch_tmp = unsafe { scratch.get_unchecked_mut(0) };
+
         if v.len() >= 2 {
-            insertion_sort_shift_left(v, 1, is_less);
+            insertion_sort_shift_left(v, 1, scratch_tmp, is_less);
         }
     }
 }
 
-pub const MIN_SMALL_SORT_SCRATCH_LEN: usize = i32::SMALL_SORT_THRESHOLD + 16;
+pub const MIN_SMALL_SORT_SCRATCH_LEN: usize = i32::SMALL_SORT_THRESHOLD + 17;
 
 impl<T: crate::Freeze> SmallSortTypeImpl for T {
     // From a comparison perspective 20 was ~2% more efficient for fully
@@ -47,7 +53,7 @@ impl<T: crate::Freeze> SmallSortTypeImpl for T {
     // better performance overall.
     const SMALL_SORT_THRESHOLD: usize = 32;
 
-    #[inline(always)]
+    #[inline(never)]
     fn sort_small<F: FnMut(&T, &T) -> bool>(
         v: &mut [T],
         scratch: &mut [MaybeUninit<T>],
@@ -67,7 +73,7 @@ fn sort_small_general<T: crate::Freeze, F: FnMut(&T, &T) -> bool>(
         return;
     }
 
-    if scratch.len() < v.len() + 16 {
+    if scratch.len() < v.len() + 17 {
         intrinsics::abort();
     }
 
@@ -77,6 +83,7 @@ fn sort_small_general<T: crate::Freeze, F: FnMut(&T, &T) -> bool>(
     // SAFETY: See individual comments.
     unsafe {
         let scratch_base = scratch.as_mut_ptr() as *mut T;
+        let scratch_tmp = scratch_base.add(len + 16);
 
         let presorted_len = if const { mem::size_of::<T>() <= 16 } && len >= 16 {
             // SAFETY: scratch_base is valid and has enough space.
@@ -115,7 +122,7 @@ fn sort_small_general<T: crate::Freeze, F: FnMut(&T, &T) -> bool>(
 
             for i in presorted_len..desired_len {
                 ptr::copy_nonoverlapping(src.add(i), dst.add(i), 1);
-                insert_tail(dst, dst.add(i), is_less);
+                insert_tail(dst, dst.add(i), scratch_tmp, is_less);
             }
         }
 
@@ -160,7 +167,12 @@ impl<T> Drop for CopyOnDrop<T> {
 ///
 /// # Safety
 /// begin < tail and p must be valid and initialized for all begin <= p <= tail.
-unsafe fn insert_tail<T, F: FnMut(&T, &T) -> bool>(begin: *mut T, tail: *mut T, is_less: &mut F) {
+unsafe fn insert_tail<T, F: FnMut(&T, &T) -> bool>(
+    begin: *mut T,
+    tail: *mut T,
+    scratch_tmp: *mut T,
+    is_less: &mut F,
+) {
     // SAFETY: see individual comments.
     unsafe {
         // SAFETY: in-bounds as tail > begin.
@@ -174,9 +186,9 @@ unsafe fn insert_tail<T, F: FnMut(&T, &T) -> bool>(begin: *mut T, tail: *mut T, 
         // effectively a move, not a copy. Should a panic occur, or we have found
         // the correct insertion position, gap_guard ensures the element is moved
         // back into the array.
-        let tmp = ManuallyDrop::new(tail.read());
+        ptr::copy_nonoverlapping(tail, scratch_tmp, 1);
         let mut gap_guard = CopyOnDrop {
-            src: &*tmp,
+            src: scratch_tmp,
             dst: tail,
             len: 1,
         };
@@ -194,7 +206,7 @@ unsafe fn insert_tail<T, F: FnMut(&T, &T) -> bool>(begin: *mut T, tail: *mut T, 
 
             // SAFETY: we checked that sift != begin, thus this is in-bounds.
             sift = sift.sub(1);
-            if !is_less(&tmp, &*sift) {
+            if !is_less(&*scratch_tmp, &*sift) {
                 break;
             }
         }
@@ -205,6 +217,7 @@ unsafe fn insert_tail<T, F: FnMut(&T, &T) -> bool>(begin: *mut T, tail: *mut T, 
 pub fn insertion_sort_shift_left<T, F: FnMut(&T, &T) -> bool>(
     v: &mut [T],
     offset: usize,
+    scratch: &mut MaybeUninit<T>,
     is_less: &mut F,
 ) {
     let len = v.len();
@@ -224,7 +237,7 @@ pub fn insertion_sort_shift_left<T, F: FnMut(&T, &T) -> bool>(
         while tail != v_end {
             // SAFETY: v_base and tail are both valid pointers to elements, and
             // v_base < tail since we checked offset != 0.
-            insert_tail(v_base, tail, is_less);
+            insert_tail(v_base, tail, scratch.as_mut_ptr(), is_less);
 
             // SAFETY: we checked that tail is not yet the one-past-end pointer.
             tail = tail.add(1);

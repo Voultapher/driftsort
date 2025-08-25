@@ -1,6 +1,5 @@
 #![allow(incomplete_features, internal_features, stable_features)]
 #![feature(
-    ptr_sub_ptr,
     maybe_uninit_slice,
     auto_traits,
     negative_impls,
@@ -10,7 +9,7 @@
     core_intrinsics,
     sized_type_properties,
     generic_const_exprs,
-    maybe_uninit_uninit_array
+    maybe_uninit_uninit_array_transpose
 )]
 
 use core::cmp::{self, Ordering};
@@ -60,7 +59,8 @@ fn driftsort<T, F: FnMut(&T, &T) -> bool, BufT: BufGuard<T>>(v: &mut [T], is_les
     // misses during the sort, and thrashing the i-cache for surrounding code.
     const MAX_LEN_ALWAYS_INSERTION_SORT: usize = 20;
     if intrinsics::likely(len <= MAX_LEN_ALWAYS_INSERTION_SORT) {
-        smallsort::insertion_sort_shift_left(v, 1, is_less);
+        let mut scratch_tmp = MaybeUninit::<T>::uninit();
+        smallsort::insertion_sort_shift_left(v, 1, &mut scratch_tmp, is_less);
         return;
     }
 
@@ -130,7 +130,7 @@ impl<T, const N: usize> AlignedStorage<T, N> {
     fn new() -> Self {
         Self {
             _align: [],
-            storage: MaybeUninit::uninit_array(),
+            storage: MaybeUninit::uninit().transpose(),
         }
     }
 
